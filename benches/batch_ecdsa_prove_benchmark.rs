@@ -1,6 +1,9 @@
+use std::fs::File;
+use std::io::Write;
 use std::marker::PhantomData;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use plonky2::field::polynomial::PolynomialCoeffs;
+use plonky2::field::secp256k1_base::Secp256K1Base;
 use plonky2::field::secp256k1_scalar::Secp256K1Scalar;
 use plonky2::field::types::{Field, PrimeField};
 use plonky2::fri::proof::FriProof;
@@ -36,8 +39,6 @@ fn ecdsa_prove_benchmark(c: &mut Criterion) {
         );
 
         let mut builder = CircuitBuilder::<F, D>::new(config);
-
-        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
         let mut v_msg_target = Vec::with_capacity(batch_num);
         let mut v_msg_biguint_target = Vec::with_capacity(batch_num);
@@ -83,10 +84,45 @@ fn ecdsa_prove_benchmark(c: &mut Criterion) {
 
         dbg!(builder.num_gates());
 
-        
-        let data = builder.build_cuda::<C>();
+        // let data = builder.build_cuda::<C>();
+        let gate_serializer = CustomGateSerializer;
 
-        // First Proof
+        let generator_serializer = CustomGeneratorSerializer {
+            _phantom: PhantomData::<C>,
+            _phantom2: PhantomData::<Secp256K1Base>,
+            _phantom3: PhantomData::<Secp256K1Scalar>,
+        };
+
+        //let path_string = "data/data_cuda_".to_string() + &batch_num.to_string() + "_bytes";
+        let path_string = "/dev/shm/data_cuda_".to_string() + &batch_num.to_string() + "_bytes";
+        let path = std::path::Path::new(&path_string);
+        let data = if path.exists() {
+            let start_timer = std::time::Instant::now();
+            println!("Reading data");
+            let circuit_data_bytes = std::fs::read(path).unwrap();
+            let circuit_data = CircuitDataOneDim::<F, C, D>::from_bytes(
+                &circuit_data_bytes,
+                &gate_serializer,
+                &generator_serializer,
+            )
+                .unwrap();
+            println!("Reading data need time: {:?}", start_timer.elapsed());
+            circuit_data
+        } else {
+            let data = builder.build_cuda::<C>();
+            let data_bytes = data
+                .to_bytes(&gate_serializer, &generator_serializer)
+                .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
+                .unwrap();
+            println!("Writing data");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut file = File::create(path).unwrap();
+            file.write_all(&data_bytes).unwrap();
+            data
+        };
+
+        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
+
         let mut pw = PartialWitness::new();
         for i in 0..batch_num {
             let ECDSASignature { r, s } = sig_list[i];

@@ -20,19 +20,22 @@ use plonky2::gates::lookup_table::LookupTableGate;
 use plonky2::gates::multiplication_extension::MulExtensionGate;
 use plonky2::gates::noop::NoopGate;
 use plonky2::gates::poseidon::{PoseidonGate, PoseidonGenerator};
-use plonky2::gates::poseidon2::{Poseidon2Gate, Poseidon2Generator};
+//use plonky2::gates::poseidon2::{Poseidon2Gate, Poseidon2Generator};
 use plonky2::gates::poseidon_mds::{PoseidonMdsGate, PoseidonMdsGenerator};
 use plonky2::gates::public_input::PublicInputGate;
 use plonky2::gates::random_access::{RandomAccessGate, RandomAccessGenerator};
 use plonky2::gates::reducing::ReducingGate;
 use plonky2::gates::reducing_extension::ReducingExtensionGate;
 use plonky2::hash::hash_types::RichField;
-use plonky2::iop::generator::{ConstantGenerator, RandomValueGenerator};
+use plonky2::iop::generator::{
+    generate_partial_witness_cuda, ConstantGenerator, RandomValueGenerator,
+};
 use plonky2::iop::witness::PartialWitness;
 use plonky2::plonk::circuit_builder::CircuitBuilder;
-use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData, CircuitDataOneDim};
+use plonky2::plonk::circuit_data::CircuitDataOneDim;
+use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
 use plonky2::plonk::config::{
-    AlgebraicHasher, GenericConfig, Poseidon2GoldilocksConfig, PoseidonGoldilocksConfig,
+    AlgebraicHasher, GenericConfig, /* Poseidon2GoldilocksConfig, */ PoseidonGoldilocksConfig,
 };
 use plonky2::recursion::dummy_circuit::DummyProofGenerator;
 use plonky2::util::serialization::{GateSerializer, WitnessGeneratorSerializer};
@@ -80,6 +83,9 @@ pub struct ECDSASignatureTarget<C: Curve> {
     pub s: NonNativeTarget<C::ScalarField>,
 }
 
+const ECDSA_BATCH_SIZE: usize = 20;
+const PROVE_RUN_TIMES: usize = 1;
+
 pub struct CustomGateSerializer;
 
 impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for CustomGateSerializer {
@@ -98,7 +104,7 @@ impl<F: RichField + Extendable<D>, const D: usize> GateSerializer<F, D> for Cust
         NoopGate,
         PoseidonMdsGate<F, D>,
         PoseidonGate<F, D>,
-        Poseidon2Gate<F, D>,
+        //Poseidon2Gate<F, D>,
         PublicInputGate,
         RandomAccessGate<F, D>,
         ReducingExtensionGate<D>,
@@ -137,7 +143,7 @@ where
         ConstantGenerator<F>,
         PoseidonGenerator<F, D>,
         PoseidonMdsGenerator<D>,
-        Poseidon2Generator<F, D>,
+        //Poseidon2Generator<F, D>,
         RandomValueGenerator,
         BaseSumGenerator<4>,
         NonNativeMultiplicationGenerator<F, D, FF1>,
@@ -242,7 +248,7 @@ pub fn gen_batch_ecdsa_data(
 }
 
 pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitConfig) {
-    // profiling_enable();
+    profiling_enable();
     const D: usize = 2;
     type C = PoseidonGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
@@ -253,8 +259,6 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
     );
 
     let mut builder = CircuitBuilder::<F, D>::new(config);
-
-    let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
     let mut v_msg_target = Vec::with_capacity(batch_num);
     let mut v_msg_biguint_target = Vec::with_capacity(batch_num);
@@ -308,7 +312,8 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
         _phantom3: PhantomData::<Secp256K1Scalar>,
     };
 
-    let path = std::path::Path::new("data/data_bytes");
+    let path_string = "data/data_".to_string() + &batch_num.to_string() + "_bytes";
+    let path = std::path::Path::new(&path_string);
     let data = if path.exists() {
         println!("Reading data");
         let circuit_data_bytes = std::fs::read(path).unwrap();
@@ -332,27 +337,40 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
         data
     };
 
-    let mut pw = PartialWitness::new();
-    for i in 0..batch_num {
-        let ECDSASignature { r, s } = sig_list[i];
+    for j in 0..PROVE_RUN_TIMES {
+        let j = std::hint::black_box(j);
+        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
+        let mut pw = PartialWitness::new();
+        for i in 0..batch_num {
+            let ECDSASignature { r, s } = sig_list[i];
 
-        let msg_biguint = msg_list[i].to_canonical_biguint();
-        let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-        let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-        let r_biguint = r.to_canonical_biguint();
-        let s_biguint = s.to_canonical_biguint();
+            let msg_biguint = msg_list[i].to_canonical_biguint();
+            let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+            let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
 
-        pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-        pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-        pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-        pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-        pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+            pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+            pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+            pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+            pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+            pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+        }
+        //let pw = pw.clone();
+        let proof = std::hint::black_box(data.prove(pw).unwrap());
+
+        println!("proof PIS {:?}", proof.public_inputs);
+        data.verify(proof).unwrap();
+        println!("-------------------------{j}th prove finished!-------------------------------");
+        //println!("sleeping 600s...");
+        //std::thread::sleep(std::time::Duration::from_secs(600));
+        //println!("sleeping 600s finished");
     }
 
-    let proof = data.prove(pw).unwrap();
+    // let proof = data.prove(pw).unwrap();
 
-    println!("proof PIS {:?}", proof.public_inputs);
-    data.verify(proof).unwrap();
+    // println!("proof PIS {:?}", proof.public_inputs);
+    // data.verify(proof).unwrap();
 }
 
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
@@ -421,19 +439,22 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         _phantom3: PhantomData::<Secp256K1Scalar>,
     };
 
-    let path = std::path::Path::new("data/data_bytes");
+    let path_string = "data/data_cuda_".to_string() + &batch_num.to_string() + "_bytes";
+    let path = std::path::Path::new(&path_string);
     let data = if path.exists() {
+        let start_timer = std::time::Instant::now();
         println!("Reading data");
         let circuit_data_bytes = std::fs::read(path).unwrap();
-        let circuit_data = CircuitData::<F, C, D>::from_bytes(
+        let circuit_data = CircuitDataOneDim::<F, C, D>::from_bytes(
             &circuit_data_bytes,
             &gate_serializer,
             &generator_serializer,
         )
         .unwrap();
+        println!("Reading data need time: {:?}", start_timer.elapsed());
         circuit_data
     } else {
-        let data = builder.build::<C>();
+        let data = builder.build_cuda::<C>();
         let data_bytes = data
             .to_bytes(&gate_serializer, &generator_serializer)
             .map_err(|_| anyhow::Error::msg("CircuitData serialization failed."))
@@ -445,34 +466,56 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         data
     };
 
-    let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
+    for j in 0..PROVE_RUN_TIMES {
+        let j = std::hint::black_box(j);
+        let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
-    let mut pw = PartialWitness::new();
-    for i in 0..batch_num {
-        let ECDSASignature { r, s } = sig_list[i];
+        let mut pw = PartialWitness::new();
+        for i in 0..batch_num {
+            let ECDSASignature { r, s } = sig_list[i];
 
-        let msg_biguint = msg_list[i].to_canonical_biguint();
-        let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
-        let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
-        let r_biguint = r.to_canonical_biguint();
-        let s_biguint = s.to_canonical_biguint();
+            let msg_biguint = msg_list[i].to_canonical_biguint();
+            let pk_x_biguint = pk_list[i].0.x.to_canonical_biguint();
+            let pk_y_biguint = pk_list[i].0.y.to_canonical_biguint();
+            let r_biguint = r.to_canonical_biguint();
+            let s_biguint = s.to_canonical_biguint();
 
-        pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
-        pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
-        pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
-        pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
-        pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+            pw.set_biguint_target(&v_msg_biguint_target[i], &msg_biguint);
+            pw.set_biguint_target(&v_r_biguint_target[i], &r_biguint);
+            pw.set_biguint_target(&v_s_biguint_target[i], &s_biguint);
+            pw.set_biguint_target(&v_pk_x_biguint_target[i], &pk_x_biguint);
+            pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
+        }
+        //let prove_start_time = std::time::Instant::now();
+        let proof = std::hint::black_box(data.prove(pw).unwrap());
+        //print!("{j}th prove costs time :{:?}",prove_start_time.elapsed() );
+
+        println!("proof PIS {:?}", proof.public_inputs);
+        data.verify(proof).unwrap();
+
+        println!("-----------------------------{j}th finished----------------------------------------------");
     }
 
-    let proof = data.prove(pw).unwrap();
+    // let proof = data.prove(pw).unwrap();
 
-    println!("proof PIS {:?}", proof.public_inputs);
-    data.verify(proof).unwrap();
+    // println!("proof PIS {:?}", proof.public_inputs);
+    // data.verify(proof).unwrap();
+
+    // println!("---------------------------------------------------------------------------");
+
+    // let proof = data.prove(pw2).unwrap();
+
+    // println!("proof PIS {:?}", proof.public_inputs);
+    // data.verify(proof).unwrap();
 }
 
 // #[cfg(test)]
 #[cfg(any(test, bench))]
 pub mod tests {
+    // use jemallocator::Jemalloc;
+
+    // #[global_allocator]
+    // static GLOBAL: Jemalloc = Jemalloc;
     use std::fs::{self, File};
     use std::io::prelude::*;
     use std::io::{BufReader, Write};
@@ -485,7 +528,7 @@ pub mod tests {
     use plonky2::iop::witness::PartialWitness;
     use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
     use plonky2::plonk::config::{
-        GenericConfig, Poseidon2GoldilocksConfig, PoseidonGoldilocksConfig,
+        GenericConfig, /*Poseidon2GoldilocksConfig,*/ PoseidonGoldilocksConfig,
     };
     use plonky2::util::serialization::{DefaultGateSerializer, DefaultGeneratorSerializer};
     use sha3::Sha3_256;
@@ -536,7 +579,7 @@ pub mod tests {
             2,
         > = builder.build::<C>();
 
-        for _ in 0..3 {
+        for _ in 0..PROVE_RUN_TIMES {
             let mut pw = PartialWitness::new();
 
             let msg = Secp256K1Scalar::rand();
@@ -571,14 +614,20 @@ pub mod tests {
     #[test]
     #[ignore]
     fn test_batch_ecdsa_circuit_narrow() -> Result<()> {
-        test_batch_ecdsa_circuit_with_config(20, CircuitConfig::standard_ecc_config());
+        test_batch_ecdsa_circuit_with_config(
+            ECDSA_BATCH_SIZE,
+            CircuitConfig::standard_ecc_config(),
+        );
         Ok(())
     }
 
     #[test]
     #[ignore]
     fn test_batch_ecdsa_cuda_circuit_narrow() -> Result<()> {
-        test_batch_ecdsa_cuda_circuit_with_config(20, CircuitConfig::standard_ecc_config());
+        test_batch_ecdsa_cuda_circuit_with_config(
+            ECDSA_BATCH_SIZE,
+            CircuitConfig::standard_ecc_config(),
+        );
         Ok(())
     }
 

@@ -1,6 +1,5 @@
 /target
 /data
-.uuid
 .idea
 Cargo.lock
 batch_ecdsa_cuda_data_bytes

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 # plonky2 = { version = "0.1.4", default-features = false, features = ["gate_testing", "rand_chacha", "std", "parallel"]}
-plonky2 = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main"}
+plonky2 = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", default-features = true}
 plonky2_maybe_rayon = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", default-features = false }
 plonky2_u32 = { git = "https://github.com/ZeroKPunk/plonky2-u32.git",  branch = "main" }
 num = { version = "0.4.0", default-features = false }
@@ -26,6 +26,7 @@ rand = { version = "0.8.4", default-features = false, features = ["getrandom"] }
 sha2 = { version = "0.10.6" }
 sha3 = { version = "0.10.6" }
 criterion = "0.5.1"
+#jemallocator = "0.5.4"
 
 [profile.test]
 opt-level = 3

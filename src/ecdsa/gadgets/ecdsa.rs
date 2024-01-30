@@ -81,7 +81,7 @@ pub struct ECDSASignatureTarget<C: Curve> {
     pub s: NonNativeTarget<C::ScalarField>,
 }
 
-const ECDSA_BATCH_SIZE: usize = 20;
+const ECDSA_BATCH_SIZE: usize = 1;
 const PROVE_RUN_TIMES: usize = 1;
 
 pub struct CustomGateSerializer;

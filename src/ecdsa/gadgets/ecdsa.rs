@@ -34,9 +34,7 @@ use plonky2::iop::witness::PartialWitness;
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitDataOneDim;
 use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
-use plonky2::plonk::config::{
-    AlgebraicHasher, GenericConfig, /* Poseidon2GoldilocksConfig, */ PoseidonGoldilocksConfig,
-};
+use plonky2::plonk::config::{AlgebraicHasher, GenericConfig, Poseidon2GoldilocksConfig, PoseidonGoldilocksConfig};
 use plonky2::recursion::dummy_circuit::DummyProofGenerator;
 use plonky2::util::serialization::{GateSerializer, WitnessGeneratorSerializer};
 use plonky2_u32::gates::add_many_u32::{U32AddManyGate, U32AddManyGenerator};
@@ -376,7 +374,7 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
     profiling_enable();
     const D: usize = 2;
-    type C = PoseidonGoldilocksConfig;
+    type C = Poseidon2GoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
     println!(
         "BATCH SIZE {} GenericConfig {}",

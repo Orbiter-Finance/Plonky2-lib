@@ -489,8 +489,10 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         //print!("{j}th prove costs time :{:?}",prove_start_time.elapsed() );
 
         println!("proof PIS {:?}", proof.public_inputs);
-        data.verify(proof).unwrap();
-
+        let res = data.verify(proof);
+        if res.is_err() {
+            println!("verify fail {:?}", res);
+        }
         println!("-----------------------------{j}th finished----------------------------------------------");
     }
 

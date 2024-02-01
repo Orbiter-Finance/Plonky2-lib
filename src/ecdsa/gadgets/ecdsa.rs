@@ -35,7 +35,7 @@ use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitDataOneDim;
 use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
 use plonky2::plonk::config::{
-    AlgebraicHasher, GenericConfig, /* Poseidon2GoldilocksConfig, */ PoseidonGoldilocksConfig,
+    AlgebraicHasher, GenericConfig, Poseidon2GoldilocksConfig, PoseidonGoldilocksConfig,
 };
 use plonky2::recursion::dummy_circuit::DummyProofGenerator;
 use plonky2::util::serialization::{GateSerializer, WitnessGeneratorSerializer};
@@ -84,7 +84,7 @@ pub struct ECDSASignatureTarget<C: Curve> {
 }
 
 const ECDSA_BATCH_SIZE: usize = 20;
-const PROVE_RUN_TIMES: usize = 1;
+const PROVE_RUN_TIMES: usize = 3;
 
 pub struct CustomGateSerializer;
 
@@ -467,7 +467,7 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
     };
 
     for j in 0..PROVE_RUN_TIMES {
-        let j = std::hint::black_box(j);
+        //let j = std::hint::black_box(j);
         let (msg_list, sig_list, pk_list) = gen_batch_ecdsa_data(batch_num);
 
         let mut pw = PartialWitness::new();
@@ -487,7 +487,14 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
             pw.set_biguint_target(&v_pk_y_biguint_target[i], &pk_y_biguint);
         }
         //let prove_start_time = std::time::Instant::now();
-        let proof = std::hint::black_box(data.prove(pw).unwrap());
+
+        //let proof = std::hint::black_box(data.prove(pw).unwrap());
+        // normal test
+        let proof = data.prove(pw).unwrap();
+        // test out pinned memory
+        //let proof = data.prove_with_out_pinned_memory(pw).unwrap();
+        // test out memory
+        // let proof = data.prove_with_out_memory(pw).unwrap();
         //print!("{j}th prove costs time :{:?}",prove_start_time.elapsed() );
 
         println!("proof PIS {:?}", proof.public_inputs);

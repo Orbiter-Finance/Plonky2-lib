@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 # plonky2 = { version = "0.1.4", default-features = false, features = ["gate_testing", "rand_chacha", "std", "parallel"]}
-plonky2 = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main"}
-plonky2_maybe_rayon = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", default-features = false }
-plonky2_u32 = { git = "https://github.com/ZeroKPunk/plonky2-u32.git",  branch = "main" }
+plonky2 = { git = "https://github.com/Orbiter-Finance/plonky2.git", branch = "main"}
+plonky2_maybe_rayon = { git = "https://github.com/Orbiter-Finance/plonky2.git", branch = "main", default-features = false }
+plonky2_u32 = { git = "https://github.com/Orbiter-Finance/plonky2-u32.git",  branch = "main" }
 num = { version = "0.4.0", default-features = false }
 anyhow = { version = "1.0.40", default-features = false }
 hex = { version = "0.4.3", features = ["serde"]}
@@ -29,14 +29,18 @@ sha3 = { version = "0.10.6" }
 [profile.test]
 opt-level = 3
 
-[patch."https://github.com/ZerokPunk/plonky2.git"]
-plonky2 = { path = "../plonky2/plonky2"}
-plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
-
 [[bin]]
 name = "perf"
 path = "src/bin/perf.rs"
 
+[patch."https://github.com/ZerokPunk/plonky2.git"]
+plonky2 = { path = "../plonky2/plonky2"}
+plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
 
-# [patch."https://github.com/orbiter/plonky2-u32.git"]
-# plonky2_u32 = { path = "../plonky2-u32"}
+[patch."https://github.com/Orbiter-Finance/plonky2.git"]
+plonky2 = { path = "../plonky2/plonky2"}
+plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
+
+
+[patch."https://github.com/Orbiter-Finance/plonky2-u32.git"]
+plonky2_u32 = { path = "../plonky2-u32"}

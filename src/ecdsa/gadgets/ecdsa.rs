@@ -35,7 +35,8 @@ use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitDataOneDim;
 use plonky2::plonk::circuit_data::{CircuitConfig, CircuitData};
 use plonky2::plonk::config::{
-    AlgebraicHasher, GenericConfig, Poseidon2GoldilocksConfig, PoseidonGoldilocksConfig,
+    AlgebraicHasher, GenericConfig, MonolithGoldilocksConfig, Poseidon2GoldilocksConfig,
+    PoseidonGoldilocksConfig,
 };
 use plonky2::recursion::dummy_circuit::DummyProofGenerator;
 use plonky2::util::serialization::{GateSerializer, WitnessGeneratorSerializer};
@@ -50,9 +51,7 @@ use crate::ecdsa::curve::ecdsa::{sign_message, ECDSAPublicKey, ECDSASecretKey, E
 use crate::ecdsa::curve::secp256k1::Secp256K1;
 use crate::ecdsa::gadgets::biguint::WitnessBigUint;
 use crate::ecdsa::gadgets::curve::{AffinePointTarget, CircuitBuilderCurve};
-use crate::ecdsa::gadgets::curve_fixed_base::{
-    fixed_base_curve_mul_circuit, fixed_base_curve_mul_circuit_without_return,
-};
+use crate::ecdsa::gadgets::curve_fixed_base::fixed_base_curve_mul_circuit;
 use crate::ecdsa::gadgets::glv::CircuitBuilderGlv;
 use crate::ecdsa::gadgets::nonnative::{
     CircuitBuilderNonNative, NonNativeScalarAdditionGenerator, NonNativeScalarInverseGenerator,
@@ -70,7 +69,6 @@ use super::nonnative::{
     NonNativeSubtractionGenerator,
 };
 
-use ethers_core::utils::keccak256;
 #[derive(Clone, Debug)]
 pub struct ECDSASecretKeyTarget<C: Curve>(pub NonNativeTarget<C::ScalarField>);
 
@@ -84,7 +82,7 @@ pub struct ECDSASignatureTarget<C: Curve> {
 }
 
 const ECDSA_BATCH_SIZE: usize = 20;
-const PROVE_RUN_TIMES: usize = 3;
+const PROVE_RUN_TIMES: usize = 1;
 
 pub struct CustomGateSerializer;
 
@@ -376,13 +374,18 @@ pub fn test_batch_ecdsa_circuit_with_config(batch_num: usize, config: CircuitCon
 pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: CircuitConfig) {
     profiling_enable();
     const D: usize = 2;
-    type C = PoseidonGoldilocksConfig;
+    //type C = PoseidonGoldilocksConfig;
+    type C = MonolithGoldilocksConfig;
     type F = <C as GenericConfig<D>>::F;
     println!(
         "BATCH SIZE {} GenericConfig {}",
         batch_num,
         C::config_type()
     );
+    let con_type = C::config_type();
+
+    let (_, last) = (con_type.rsplit_once("::")).unwrap();
+    let last = last.trim_end_matches('\"');
 
     let mut builder = CircuitBuilder::<F, D>::new(config);
 
@@ -439,7 +442,7 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         _phantom3: PhantomData::<Secp256K1Scalar>,
     };
 
-    let path_string = "data/data_cuda_".to_string() + &batch_num.to_string() + "_bytes";
+    let path_string = "data/data_cuda_".to_string() + &batch_num.to_string() + "_bytes_" + last;
     let path = std::path::Path::new(&path_string);
     let data = if path.exists() {
         let start_timer = std::time::Instant::now();
@@ -492,9 +495,9 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
         // normal test
         let proof = data.prove(pw).unwrap();
         // test out pinned memory
-        //let proof = data.prove_with_out_pinned_memory(pw).unwrap();
+        // let proof = data.prove_with_out_pinned_memory(pw).unwrap();
         // test out memory
-        // let proof = data.prove_with_out_memory(pw).unwrap();
+        //let proof = data.prove_with_out_memory(pw).unwrap();
         //print!("{j}th prove costs time :{:?}",prove_start_time.elapsed() );
 
         println!("proof PIS {:?}", proof.public_inputs);

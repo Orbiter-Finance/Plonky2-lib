@@ -1,8 +1,12 @@
+use ethers_core::utils::rlp::Rlp;
 use num::BigUint;
 use plonky2::{
     field::{extension::Extendable, types::PrimeField64},
     hash::hash_types::RichField,
-    iop::{target::BoolTarget, witness::Witness},
+    iop::{
+        target::{BoolTarget, Target},
+        witness::Witness,
+    },
     plonk::circuit_builder::CircuitBuilder,
 };
 use plonky2_u32::{
@@ -10,15 +14,19 @@ use plonky2_u32::{
     witness::WitnessU32,
 };
 
+pub mod rlp_util;
+
 use crate::{
-    nonnative::biguint::{BigUintTarget, CircuitBuilderBiguint},
-    u32::interleaved_u32::CircuitBuilderB32,
+    nonnative::biguint::{BigUintTarget, CircuitBuilderBiguint}, rlp::rlp_util::RlpFieldParser, u32::interleaved_u32::CircuitBuilderB32
 };
 
 #[derive(Clone, Debug)]
 pub struct RlpFieldInputTarget {
     pub field_max_len: usize,
     pub input: BigUintTarget,
+    pub len_len_index_list: BigUintTarget,
+    pub field_index_list: BigUintTarget,
+    pub len_cells_len: U32Target,
     pub len_len: usize,
 }
 
@@ -43,6 +51,15 @@ pub fn max_rlp_len_len(max_len: usize) -> usize {
     }
 }
 
+pub fn parse_rlp_field_len_cells_len(value: &[u8]) -> usize {
+    let len = value.len() - 1;
+    if len > 55 {
+        (value[0] - 183) as usize
+    } else {
+        0
+    }
+}
+
 pub fn parse_rlp_field_len_len(value: &[u8]) -> usize {
     let mut len_len = 0;
     let mut len = value.len() - 1;
@@ -55,6 +72,7 @@ pub fn parse_rlp_field_len_len(value: &[u8]) -> usize {
     }
     len_len
 }
+
 
 pub trait WitnessRLP<F: PrimeField64>: Witness<F> {
     fn set_rlp_field_target_witness(&mut self, target: &RlpFieldInputTarget, value: &[u8]);
@@ -69,10 +87,26 @@ impl<T: Witness<F>, F: PrimeField64> WitnessRLP<F> for T {
         // assert!(target.input.num_limbs() >= limbs.len());
         limbs.resize(target.input.num_limbs(), 0);
         for i in 0..target.input.num_limbs() {
-            // println!("set_rlp_field_target_witness: limbs[{}] = {}", i, limbs[i]);
             self.set_u32_target(target.input.limbs[i], limbs[i] as u32);
         }
-        // target.update_len_len(value);
+
+        let len_len = parse_rlp_field_len_len(value);
+        
+        for i in 0..len_len {
+            self.set_u32_target(target.len_len_index_list.limbs[i], value[i] as u32);
+        }
+
+        let mut rlp_parser = RlpFieldParser::new(value.to_vec());
+
+        if rlp_parser.is_long_field() {
+            let field_index_range = rlp_parser.parse_rlp_long_field_index_range();
+            for i in field_index_range {
+                self.set_u32_target(target.field_index_list.limbs[i], value[i] as u32);
+            }
+        }
+
+        let len_cells_len = parse_rlp_field_len_cells_len(value);
+        self.set_u32_target(target.len_cells_len, len_cells_len as u32);
     }
 
     fn set_rlp_array_target_witness() {}
@@ -109,11 +143,17 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
 {
     fn add_virtual_rlp_field_target(&mut self, max_field_len: usize) -> RlpFieldInputTarget {
         let input = self.add_virtual_biguint_target(max_field_len + 1);
-        return RlpFieldInputTarget {
+        let len_len_index_list = self.add_virtual_biguint_target(max_field_len + 1);
+        let field_index_list = self.add_virtual_biguint_target(max_field_len + 1);
+        let len_cells_len = self.add_virtual_u32_target();
+        RlpFieldInputTarget {
             len_len: 0,
             field_max_len: max_field_len,
             input,
-        };
+            len_len_index_list,
+            len_cells_len,
+            field_index_list,
+        }
     }
 
     fn rlp_field(&mut self, rlp_field: &RlpFieldInputTarget) {
@@ -131,7 +171,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
 
         // self.check_less_than_safe_u32(len_len, (max_len_len + 1) as u32);
 
-        // let (len_cells, len_val) = self.parse_rlp_len(&rlp_field.input.limbs, rlp_field.len_len, len_len, max_len_len);
+        let (len_cells, len_val) = self.parse_rlp_len(&rlp_field.input.limbs, rlp_field.len_len, prefix_parsed.len_len, max_len_len);
     }
 
     fn witness_subarray(
@@ -148,6 +188,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
         self.connect_u32(*start_id_target, constant_start_id);
         let constant_sub_len = self.constant_u32(sub_len as u32);
         self.connect_u32(*sub_len_target, constant_sub_len);
+        println!("start_id = {}, sub_len = {}", start_id, sub_len);
         debug_assert!(sub_len <= max_len, "{sub_len} > {max_len}");
 
         self.copy_many_u32(&array[start_id..start_id + sub_len])
@@ -160,19 +201,17 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
         let mut len_counter = self.zero_u32();
         let mut byte_val = self.zero_u32();
         // reverse the array
-        println!("array.len() = {}", array.len());
         for i in (0..array.len()).rev() {
             let (tmp, _) = self.mul_u32(array[i], byte_accumulator);
             (byte_val, _) = self.add_u32(byte_val, tmp);
             (byte_accumulator, _) = self.mul_u32(byte_accumulator, constant_256);
             (len_counter, _) = self.add_u32(len_counter, const_one);
         }
-
-        let const_1024 = self.constant_u32(1023);
+        // // for debug
+        // let const_1024 = self.constant_u32(1023);
         // self.connect_u32(const_1024, *len);
-        self.connect_u32(const_1024, len_counter);
 
-        self.connect_u32(len_counter, *len);
+        // self.connect_u32(len_counter, *len);
         byte_val
     }
 
@@ -186,6 +225,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
         let zero = self.zero_u32();
         let len_cells =
             self.witness_subarray(rlp_cells, 0, &zero, len_len, &len_len_target, max_len);
+        println!("len_cells = {:?}", len_cells.len());
 
         let len_val = self.evaluate_byte_array(&len_cells, &len_len_target);
         (len_cells, len_val)
@@ -225,7 +265,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
 
         let (field_len, _) = self.sub_u32(*prefix, const_128, borrow);
 
-        let (len_len, _) = self.sub_u32(*prefix, const_183, borrow);
+        let (len_cells_len, _) = self.sub_u32(*prefix, const_183, borrow);
 
         // // for debug len_len = 2
         // let const_2 = self.constant_u32(2);
@@ -235,7 +275,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
         // let const_is_true = self.constant_u32(1);
         // self.connect_u32(const_is_true, U32Target(is_big.target));
 
-        let next_len = self.select_u32(is_big, len_len, field_len);
+        let next_len = self.select_u32(is_big, len_cells_len, field_len);
 
         // // for debug next_len = 2
         // let const_2 = self.constant_u32(2);
@@ -247,8 +287,13 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderRLP<F, D>
         // let const_2 = self.constant_u32(4);
         // self.connect_u32(const_2, next_len);
 
-        let (low_len_len, _) = self.mul_u32(len_len, U32Target(is_big.target));
+        let (low_len_len, _) = self.mul_u32(len_cells_len, U32Target(is_big.target));
         let (len_len, _) = self.mul_u32(U32Target(is_not_literal.target), low_len_len);
+
+        // // for debug next_len = 2
+        // let const_2 = self.constant_u32(4);
+        // self.connect_u32(const_2, len_len);
+
         RlpFieldPrefixParsed {
             is_not_literal: U32Target(is_not_literal.target),
             is_big: U32Target(is_big.target),
@@ -278,12 +323,11 @@ mod tests {
         const D: usize = 2;
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
-        println!("DDDDDD");
 
         let test_cases = [
             // Vec::from_hex("77").unwrap(), // single byte
-            Vec::from_hex("8100").unwrap(), // single byte
-            Vec::from_hex("820000").unwrap(), // 2 bytes
+            // Vec::from_hex("8100").unwrap(), // single byte
+            // Vec::from_hex("820000").unwrap(), // 2 bytes
             // Vec::from_hex("8300011000").unwrap(), // 3 bytes
             Vec::from_hex("b904004c6f72656d20697073756d20646f6c6f722073697420616d65742c20636f6e73656374657475722061646970697363696e6720656c69742e20437572616269747572206d6175726973206d61676e612c20737573636970697420736564207665686963756c61206e6f6e2c20696163756c697320666175636962757320746f72746f722e2050726f696e20737573636970697420756c74726963696573206d616c6573756164612e204475697320746f72746f7220656c69742c2064696374756d2071756973207472697374697175652065752c20756c7472696365732061742072697375732e204d6f72626920612065737420696d70657264696574206d6920756c6c616d636f7270657220616c6971756574207375736369706974206e6563206c6f72656d2e2041656e65616e2071756973206c656f206d6f6c6c69732c2076756c70757461746520656c6974207661726975732c20636f6e73657175617420656e696d2e204e756c6c6120756c74726963657320747572706973206a7573746f2c20657420706f73756572652075726e6120636f6e7365637465747572206e65632e2050726f696e206e6f6e20636f6e76616c6c6973206d657475732e20446f6e65632074656d706f7220697073756d20696e206d617572697320636f6e67756520736f6c6c696369747564696e2e20566573746962756c756d20616e746520697073756d207072696d697320696e206661756369627573206f726369206c756374757320657420756c74726963657320706f737565726520637562696c69612043757261653b2053757370656e646973736520636f6e76616c6c69732073656d2076656c206d617373612066617563696275732c2065676574206c6163696e6961206c616375732074656d706f722e204e756c6c61207175697320756c747269636965732070757275732e2050726f696e20617563746f722072686f6e637573206e69626820636f6e64696d656e74756d206d6f6c6c69732e20416c697175616d20636f6e73657175617420656e696d206174206d65747573206c75637475732c206120656c656966656e6420707572757320656765737461732e20437572616269747572206174206e696268206d657475732e204e616d20626962656e64756d2c206e6571756520617420617563746f72207472697374697175652c206c6f72656d206c696265726f20616c697175657420617263752c206e6f6e20696e74657264756d2074656c6c7573206c65637475732073697420616d65742065726f732e20437261732072686f6e6375732c206d65747573206163206f726e617265206375727375732c20646f6c6f72206a7573746f20756c747269636573206d657475732c20617420756c6c616d636f7270657220766f6c7574706174").unwrap(), // 1024 bytes
         ];

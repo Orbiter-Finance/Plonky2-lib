@@ -6,3 +6,4 @@ batch_ecdsa_cuda_data_bytes
 batch_size_1_test_data_bytes
 test_data_bytes
 test_output.txt
+*.nsys-rep

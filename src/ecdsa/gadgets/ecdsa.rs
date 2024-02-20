@@ -82,7 +82,7 @@ pub struct ECDSASignatureTarget<C: Curve> {
 }
 
 const ECDSA_BATCH_SIZE: usize = 20;
-const PROVE_RUN_TIMES: usize = 20;
+const PROVE_RUN_TIMES: usize = 3;
 
 pub struct CustomGateSerializer;
 
@@ -495,11 +495,11 @@ pub fn test_batch_ecdsa_cuda_circuit_with_config(batch_num: usize, config: Circu
 
         //let proof = std::hint::black_box(data.prove(pw).unwrap());
         // normal test
-        // let proof = data.prove(pw).unwrap();
+        let proof = data.prove(pw).unwrap();
         // test out pinned memory
         // let proof = data.prove_with_out_pinned_memory(pw).unwrap();
         // test out memory
-        let proof = data.prove_with_out_memory(pw).unwrap();
+        //let proof = data.prove_with_out_memory(pw).unwrap();
         //print!("{j}th prove costs time :{:?}",prove_start_time.elapsed() );
 
         println!("proof PIS {:?}", proof.public_inputs);

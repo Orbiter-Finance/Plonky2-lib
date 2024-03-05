@@ -5,7 +5,7 @@ extern crate proc_macro;
 
 pub mod ecdsa;
 pub mod hash;
-mod mpt;
+//mod mpt;
 pub mod nonnative;
 pub mod poseidon;
 pub mod smt;

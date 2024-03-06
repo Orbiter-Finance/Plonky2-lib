@@ -150,6 +150,11 @@ impl<const N: usize> BytesTarget<N> {
 
         accumulator
     }
+
+    pub fn to_bytes32_target(self) -> Bytes32Target {
+        assert_eq!(N, 32);
+        self.data.try_into().unwrap()
+    }
 }
 
 impl<const N: usize> From<Vec<ByteTarget>> for BytesTarget<N> {
@@ -195,6 +200,20 @@ impl Bytes32Target {
         }
         result
     }
+
+    pub fn select<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        selector: BoolTarget,
+        i2: Bytes32Target,
+    ) -> Bytes32Target {
+        assert_eq!(self.targets().len(), i2.targets().len());
+        let mut targets = Vec::new();
+        for (t1, t2) in self.targets().iter().zip(i2.targets().iter()) {
+            targets.push(BoolTarget::new_unsafe(builder.select(selector, *t1, *t2)));
+        }
+        targets.try_into().unwrap()
+    }
 }
 
 impl From<Vec<ByteTarget>> for Bytes32Target {
@@ -204,9 +223,72 @@ impl From<Vec<ByteTarget>> for Bytes32Target {
     }
 }
 
+impl From<Vec<BoolTarget>> for Bytes32Target {
+    fn from(vec: Vec<BoolTarget>) -> Self {
+        let array: Vec<ByteTarget> = vec
+            .as_slice()
+            .chunks(8)
+            .map(|v| {
+                let byte: ByteTarget = v.to_vec().try_into().expect("Vec length is not 8");
+                byte
+            })
+            .collect();
+        array.try_into().unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Bytes32ArrayTarget<const N: usize>(pub [Bytes32Target; N]);
+
+impl<const N: usize> Bytes32ArrayTarget<N> {
+    pub fn new(elements: Vec<Bytes32Target>) -> Self {
+        assert_eq!(elements.len(), N);
+        elements.try_into().unwrap()
+    }
+    pub fn as_slice(&self) -> &[Bytes32Target] {
+        self.0.as_slice()
+    }
+
+    pub fn select_array<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        selector: Target,
+    ) -> Bytes32Target {
+        let array = self.as_slice();
+        // The accumulator holds the variable of the selected result
+        let mut accumulator = array[0].clone();
+
+        for i in 0..array.len() {
+            // Whether the accumulator should be set to the i-th element (if selector_enabled=true)
+            // Or should be set to the previous value (if selector_enabled=false)
+            let target_i = builder.constant(F::from_canonical_usize(i));
+            let selector_enabled = builder.is_equal(target_i, selector);
+            // If selector_enabled, then accum_var gets set to arr_var, otherwise it stays the same
+            accumulator = array[i].select(builder, selector_enabled, accumulator);
+        }
+
+        accumulator
+    }
+}
+
+impl<const N: usize> From<Vec<Bytes32Target>> for Bytes32ArrayTarget<N> {
+    fn from(vec: Vec<Bytes32Target>) -> Self {
+        let array: [Bytes32Target; N] = vec.try_into().expect("Vec length is not 8");
+        Bytes32ArrayTarget(array)
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct U32sTarget<const N: usize> {
-    pub data: Vec<U32Target>,
+pub struct ArrayTarget<const N: usize>(pub [Target; N]);
+
+impl<const N: usize> ArrayTarget<N> {
+    pub fn new() -> Self {
+        todo!()
+    }
+
+    pub fn targets(&self) -> Vec<Target> {
+        self.0.to_vec()
+    }
 }
 
 pub trait Nibbles<ByteTarget> {

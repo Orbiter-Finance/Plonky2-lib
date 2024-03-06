@@ -1,6 +1,6 @@
 use plonky2::field::extension::Extendable;
 use plonky2::hash::hash_types::RichField;
-use plonky2::iop::target::BoolTarget;
+use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::U32Target;
 use plonky2_u32::gadgets::multiple_comparison::list_le_circuit;
@@ -12,9 +12,9 @@ pub trait LessThanOrEqual<F: RichField + Extendable<D>, const D: usize, Rhs = Se
     fn lte(self, rhs: Rhs, builder: &mut CircuitBuilder<F, D>) -> BoolTarget;
 }
 
-impl<F: RichField + Extendable<D>, const D: usize> LessThanOrEqual<F, D> for U32Target {
+impl<F: RichField + Extendable<D>, const D: usize> LessThanOrEqual<F, D> for Target {
     fn lte(self, rhs: Self, builder: &mut CircuitBuilder<F, D>) -> BoolTarget {
-        list_le_circuit(builder, vec![self.0], vec![rhs.0], 32).into()
+        list_le_circuit(builder, vec![self], vec![rhs], 32).into()
     }
 }
 

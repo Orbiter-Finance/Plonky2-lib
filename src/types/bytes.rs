@@ -1,9 +1,11 @@
 use crate::nonnative::biguint::BigUintTarget;
 use array_macro::array;
+use itertools::Itertools;
 use plonky2::field::extension::Extendable;
 use plonky2::hash::hash_types::RichField;
-use plonky2::iop::target::BoolTarget;
+use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
+use plonky2_u32::gadgets::arithmetic_u32::U32Target;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ByteTarget(pub [BoolTarget; 8]);
@@ -21,6 +23,16 @@ impl ByteTarget {
         self.0
     }
 
+    pub fn as_le_bits(self) -> [BoolTarget; 8] {
+        let mut bits = self.as_be_bits();
+        bits.reverse();
+        bits
+    }
+
+    pub fn targets(&self) -> Vec<Target> {
+        self.as_be_bits().iter().map(|v| v.target).collect()
+    }
+
     pub fn to_nibbles<F: RichField + Extendable<D>, const D: usize>(
         self,
         builder: &mut CircuitBuilder<F, D>,
@@ -34,6 +46,42 @@ impl ByteTarget {
         right_nibble[4..].copy_from_slice(&bits[4..8]);
 
         [ByteTarget(left_nibble), ByteTarget(right_nibble)]
+    }
+
+    pub fn is_equal<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        other: ByteTarget,
+    ) -> BoolTarget {
+        let mut result = builder._true();
+        for (t1, t2) in self.targets().iter().zip(other.targets().iter()) {
+            let target_eq = builder.is_equal(*t1, *t2);
+            result = builder.and(target_eq, result);
+        }
+        result
+    }
+
+    pub fn select<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        selector: BoolTarget,
+        i2: ByteTarget,
+    ) -> ByteTarget {
+        assert_eq!(self.targets().len(), i2.targets().len());
+        let mut targets = Vec::new();
+        for (t1, t2) in self.targets().iter().zip(i2.targets().iter()) {
+            targets.push(BoolTarget::new_unsafe(builder.select(selector, *t1, *t2)));
+        }
+        targets.try_into().unwrap()
+    }
+
+    /// Creates a Target from a ByteTarget.
+    pub fn to_target<F: RichField + Extendable<D>, const D: usize>(
+        self,
+        builder: &mut CircuitBuilder<F, D>,
+    ) -> Target {
+        let le_targets = self.as_le_bits();
+        builder.le_sum(le_targets.into_iter())
     }
 }
 
@@ -57,6 +105,18 @@ impl<const N: usize> BytesTarget<N> {
         Self { data: elements }
     }
 
+    pub fn from_biguint_target<F: RichField + Extendable<D>, const D: usize>(
+        builder: &mut CircuitBuilder<F, D>,
+        value: BigUintTarget,
+    ) -> Self {
+        let mut bytes = Vec::with_capacity(N);
+        for limb in value.limbs.iter() {
+            let byte: ByteTarget = builder.low_bits(limb.0, 8, 8).try_into().unwrap();
+            bytes.push(byte);
+        }
+        Self::new(bytes)
+    }
+
     pub fn as_slice(&self) -> &[ByteTarget] {
         &self.data
     }
@@ -68,6 +128,33 @@ impl<const N: usize> BytesTarget<N> {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn select_array<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        selector: Target,
+    ) -> ByteTarget {
+        let array = self.as_slice();
+        // The accumulator holds the variable of the selected result
+        let mut accumulator = array[0].clone();
+
+        for i in 0..array.len() {
+            // Whether the accumulator should be set to the i-th element (if selector_enabled=true)
+            // Or should be set to the previous value (if selector_enabled=false)
+            let target_i = builder.constant(F::from_canonical_usize(i));
+            let selector_enabled = builder.is_equal(target_i, selector);
+            // If selector_enabled, then accum_var gets set to arr_var, otherwise it stays the same
+            accumulator = array[i].select(builder, selector_enabled, accumulator);
+        }
+
+        accumulator
+    }
+}
+
+impl<const N: usize> From<Vec<ByteTarget>> for BytesTarget<N> {
+    fn from(elements: Vec<ByteTarget>) -> Self {
+        BytesTarget::new(elements)
     }
 }
 
@@ -91,6 +178,23 @@ impl Bytes32Target {
     pub fn as_bytes(&self) -> [ByteTarget; 32] {
         self.0
     }
+
+    pub fn targets(&self) -> Vec<Target> {
+        self.as_bytes().iter().flat_map(|v| v.targets()).collect()
+    }
+
+    pub fn is_equal<F: RichField + Extendable<D>, const D: usize>(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        other: Bytes32Target,
+    ) -> BoolTarget {
+        let mut result = builder._true();
+        for (t1, t2) in self.targets().iter().zip(other.targets().iter()) {
+            let target_eq = builder.is_equal(*t1, *t2);
+            result = builder.and(target_eq, result);
+        }
+        result
+    }
 }
 
 impl From<Vec<ByteTarget>> for Bytes32Target {
@@ -98,6 +202,11 @@ impl From<Vec<ByteTarget>> for Bytes32Target {
         let array: [ByteTarget; 32] = vec.try_into().expect("Vec length is not 8");
         Bytes32Target(array)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct U32sTarget<const N: usize> {
+    pub data: Vec<U32Target>,
 }
 
 pub trait Nibbles<ByteTarget> {

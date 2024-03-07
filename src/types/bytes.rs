@@ -5,7 +5,7 @@ use plonky2::field::extension::Extendable;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
-use plonky2_u32::gadgets::arithmetic_u32::U32Target;
+use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ByteTarget(pub [BoolTarget; 8]);
@@ -218,7 +218,7 @@ impl Bytes32Target {
 
 impl From<Vec<ByteTarget>> for Bytes32Target {
     fn from(vec: Vec<ByteTarget>) -> Self {
-        let array: [ByteTarget; 32] = vec.try_into().expect("Vec length is not 8");
+        let array: [ByteTarget; 32] = vec.try_into().expect("Vec length is not 32");
         Bytes32Target(array)
     }
 }
@@ -273,21 +273,28 @@ impl<const N: usize> Bytes32ArrayTarget<N> {
 
 impl<const N: usize> From<Vec<Bytes32Target>> for Bytes32ArrayTarget<N> {
     fn from(vec: Vec<Bytes32Target>) -> Self {
-        let array: [Bytes32Target; N] = vec.try_into().expect("Vec length is not 8");
+        let array: [Bytes32Target; N] = vec.try_into().unwrap();
         Bytes32ArrayTarget(array)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ArrayTarget<const N: usize>(pub [Target; N]);
+pub struct U32ArrayTarget<const N: usize>(pub [U32Target; N]);
 
-impl<const N: usize> ArrayTarget<N> {
+impl<const N: usize> U32ArrayTarget<N> {
     pub fn new() -> Self {
         todo!()
     }
 
-    pub fn targets(&self) -> Vec<Target> {
+    pub fn targets(&self) -> Vec<U32Target> {
         self.0.to_vec()
+    }
+}
+
+impl<const N: usize> From<Vec<U32Target>> for U32ArrayTarget<N> {
+    fn from(vec: Vec<U32Target>) -> Self {
+        let array: [U32Target; N] = vec.try_into().unwrap();
+        U32ArrayTarget(array)
     }
 }
 
@@ -306,5 +313,48 @@ impl Nibbles<ByteTarget> for Vec<ByteTarget> {
         self.iter()
             .flat_map(|b| b.to_nibbles(builder))
             .collect::<Vec<ByteTarget>>()
+    }
+}
+
+pub trait CircuitBuilderBytes<F: RichField + Extendable<D>, const D: usize> {
+    fn add_virtual_byte_target(&mut self) -> ByteTarget;
+
+    fn add_virtual_bytes_target<const N: usize>(&mut self) -> BytesTarget<N>;
+
+    fn add_virtual_bytes32_target(&mut self) -> Bytes32Target;
+
+    fn add_virtual_bytes32_array_target<const N: usize>(&mut self) -> Bytes32ArrayTarget<N>;
+
+    fn add_virtual_u32_array_target<const N: usize>(&mut self) -> U32ArrayTarget<N>;
+}
+
+impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBytes<F, D>
+    for CircuitBuilder<F, D>
+{
+    fn add_virtual_byte_target(&mut self) -> ByteTarget {
+        let bool_targets: Vec<_> = (0..8)
+            .map(|_| self.add_virtual_bool_target_unsafe())
+            .collect();
+        bool_targets.into()
+    }
+
+    fn add_virtual_bytes_target<const N: usize>(&mut self) -> BytesTarget<N> {
+        let byte_targets: Vec<_> = (0..N).map(|_| self.add_virtual_byte_target()).collect();
+        byte_targets.into()
+    }
+
+    fn add_virtual_bytes32_target(&mut self) -> Bytes32Target {
+        let byte_targets: Vec<_> = (0..32).map(|_| self.add_virtual_byte_target()).collect();
+        byte_targets.into()
+    }
+
+    fn add_virtual_bytes32_array_target<const N: usize>(&mut self) -> Bytes32ArrayTarget<N> {
+        let byte32_targets: Vec<_> = (0..N).map(|_| self.add_virtual_bytes32_target()).collect();
+        byte32_targets.into()
+    }
+
+    fn add_virtual_u32_array_target<const N: usize>(&mut self) -> U32ArrayTarget<N> {
+        let u32_targets = self.add_virtual_u32_targets(N);
+        u32_targets.into()
     }
 }

@@ -4,6 +4,8 @@ extern crate alloc;
 extern crate proc_macro;
 
 pub mod ecdsa;
+pub mod eth;
+pub mod extension;
 pub mod hash;
 mod mpt;
 pub mod nonnative;

@@ -2,10 +2,13 @@ use crate::nonnative::biguint::BigUintTarget;
 use array_macro::array;
 use itertools::Itertools;
 use plonky2::field::extension::Extendable;
+use plonky2::field::types::PrimeField64;
 use plonky2::hash::hash_types::RichField;
 use plonky2::iop::target::{BoolTarget, Target};
+use plonky2::iop::witness::Witness;
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
+use plonky2_u32::witness::WitnessU32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ByteTarget(pub [BoolTarget; 8]);
@@ -278,7 +281,7 @@ impl<const N: usize> From<Vec<Bytes32Target>> for Bytes32ArrayTarget<N> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct U32ArrayTarget<const N: usize>(pub [U32Target; N]);
 
 impl<const N: usize> U32ArrayTarget<N> {
@@ -326,6 +329,8 @@ pub trait CircuitBuilderBytes<F: RichField + Extendable<D>, const D: usize> {
     fn add_virtual_bytes32_array_target<const N: usize>(&mut self) -> Bytes32ArrayTarget<N>;
 
     fn add_virtual_u32_array_target<const N: usize>(&mut self) -> U32ArrayTarget<N>;
+
+    fn assert_bytes32_is_equal(&mut self, x: Bytes32Target, y: Bytes32Target);
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBytes<F, D>
@@ -357,4 +362,81 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBytes<F, D>
         let u32_targets = self.add_virtual_u32_targets(N);
         u32_targets.into()
     }
+
+    fn assert_bytes32_is_equal(&mut self, x: Bytes32Target, y: Bytes32Target) {
+        for (t1, t2) in x.targets().iter().zip(y.targets().iter()) {
+            self.connect(*t1, *t2);
+        }
+    }
+}
+
+pub trait WitnessBytes<F: PrimeField64>: Witness<F> {
+    fn set_byte_target(&mut self, target: &ByteTarget, value: u32);
+
+    fn set_bytes_target<const N: usize>(&mut self, target: &BytesTarget<N>, value: Vec<u32>);
+
+    fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>);
+
+    fn set_bytes32_array_target<const N: usize>(
+        &mut self,
+        target: &Bytes32ArrayTarget<N>,
+        value: Vec<Vec<u32>>,
+    );
+
+    fn set_u32_array_target<const N: usize>(&mut self, target: &U32ArrayTarget<N>, value: Vec<u32>);
+}
+
+impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
+    fn set_byte_target(&mut self, target: &ByteTarget, value: u32) {
+        let bools = u32_to_bools(value);
+        assert_eq!(target.as_be_bits().len(), bools.len());
+        for (i, &bool) in bools.iter().enumerate() {
+            self.set_bool_target(target.as_be_bits()[i], bool);
+        }
+    }
+
+    fn set_bytes_target<const N: usize>(&mut self, target: &BytesTarget<N>, value: Vec<u32>) {
+        assert_eq!(N, value.len());
+        for (u, t) in value.iter().zip(target.as_vec().iter()) {
+            self.set_byte_target(t, *u);
+        }
+    }
+
+    fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>) {
+        assert_eq!(32, value.len());
+        for (u, t) in value.iter().zip(target.as_bytes().iter()) {
+            self.set_byte_target(t, *u);
+        }
+    }
+
+    fn set_bytes32_array_target<const N: usize>(
+        &mut self,
+        target: &Bytes32ArrayTarget<N>,
+        value: Vec<Vec<u32>>,
+    ) {
+        assert_eq!(N, value.len());
+        for (u, t) in value.iter().zip(target.as_slice().iter()) {
+            self.set_bytes32_target(t, u.clone());
+        }
+    }
+
+    fn set_u32_array_target<const N: usize>(
+        &mut self,
+        target: &U32ArrayTarget<N>,
+        value: Vec<u32>,
+    ) {
+        assert_eq!(N, value.len());
+        for (u, t) in value.iter().zip(target.0.iter()) {
+            self.set_u32_target(*t, *u);
+        }
+    }
+}
+
+pub fn u32_to_bools(mut value: u32) -> Vec<bool> {
+    let mut binary: Vec<bool> = Vec::new();
+    while value > 0 {
+        binary.insert(0, if value & 1 == 1 { true } else { false });
+        value >>= 1;
+    }
+    binary
 }

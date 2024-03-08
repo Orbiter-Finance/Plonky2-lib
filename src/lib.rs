@@ -5,7 +5,7 @@ extern crate proc_macro;
 
 pub mod ecdsa;
 pub mod hash;
-//mod mpt;
+mod mpt;
 pub mod nonnative;
 pub mod poseidon;
 pub mod smt;
@@ -13,6 +13,9 @@ pub mod types;
 pub mod u32;
 pub mod zkaa;
 pub mod zkdsa;
+
+// eth
+mod storage;
 
 pub fn profiling_enable() {
     let mut builder = env_logger::Builder::from_default_env();

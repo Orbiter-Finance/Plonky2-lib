@@ -1,5 +1,5 @@
 pub mod bytes;
 pub mod math;
-mod serialization;
+pub mod serialization;
 mod stream;
 mod uint;

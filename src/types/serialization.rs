@@ -1,7 +1,7 @@
 use crate::types::bytes::{ByteTarget, Bytes32Target};
+use itertools::Itertools;
+use plonky2::iop::target::BoolTarget;
 use plonky2::util::serialization::{Buffer, IoResult, Read};
-use plonky2_u32::gadgets::arithmetic_u32::U32Target;
-use plonky2_u32::serialization::ReadU32;
 
 pub trait ReadBytes {
     fn read_byte_target(&mut self) -> IoResult<ByteTarget>;
@@ -12,15 +12,19 @@ impl ReadBytes for Buffer<'_> {
     #[inline]
     fn read_byte_target(&mut self) -> IoResult<ByteTarget> {
         let targets = self.read_target_vec()?;
-        //ByteTarget::from_target(targets);
-        todo!()
+        let bools = targets
+            .into_iter()
+            .map(|t| BoolTarget::new_unsafe(t))
+            .collect_vec();
+        Ok(ByteTarget::from_elements(bools))
     }
     #[inline]
     fn read_byte32_target(&mut self) -> IoResult<Bytes32Target> {
-        todo!()
+        let targets = self.read_target_vec()?;
+        let bools = targets
+            .into_iter()
+            .map(|t| BoolTarget::new_unsafe(t))
+            .collect_vec();
+        Ok(Bytes32Target::from_elements(bools))
     }
-    // #[inline]
-    // fn read_target_u32(&mut self) -> IoResult<U32Target> {
-    //     Ok(U32Target(self.read_target()?))
-    // }
 }

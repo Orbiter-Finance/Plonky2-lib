@@ -6,6 +6,7 @@ use crate::types::bytes::{
     AddressTarget, Bytes32Target, CircuitBuilderBytes, GeneratedValuesBytes, U256Target,
     WitnessBytes,
 };
+use crate::types::serialization::ReadBytes;
 use ethers_core::types::H256;
 use plonky2::field::extension::Extendable;
 use plonky2::hash::hash_types::RichField;
@@ -20,7 +21,7 @@ use plonky2_u32::serialization::ReadU32;
 use plonky2_u32::witness::WitnessU32;
 use std::marker::PhantomData;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EthStorageKeyGenerator<F: RichField + Extendable<D>, const D: usize> {
     mapping_location: U32Target,
     map_key: Bytes32Target,
@@ -65,12 +66,10 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     fn run_once(&self, witness: &PartitionWitness<F>, buffer: &mut GeneratedValues<F>) {
         let (mapping_location, _) = witness.get_u32_target(self.mapping_location);
         let map_key = witness.get_bytes32_target(self.map_key);
-        let map_key: Vec<_> = map_key.into_iter().map(|v| v as u8).collect();
         let map_key = H256::from_slice(map_key.as_slice());
 
         let location = get_map_storage_location(mapping_location as u128, map_key);
-        let location = location.as_bytes().iter().map(|&v| v as u32).collect();
-        buffer.set_bytes32_target(&self.value, location);
+        buffer.set_bytes32_target(&self.value, location.as_bytes().to_vec());
     }
 
     #[allow(unused_variables)]
@@ -83,21 +82,13 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     #[allow(unused_variables)]
     fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self> {
         let mapping_location = src.read_target_u32()?;
-        let map_key_targets = src.read_biguint_target()?;
-        todo!()
-        // let mapping_location = U256Variable::from_targets(&mapping_location_targets);
-        //
-        // let map_key_targets = src.read_target_vec()?;
-        // let map_key = Bytes32Variable::from_targets(&map_key_targets);
-        //
-        // let value_targets = src.read_target_vec()?;
-        // let value = Bytes32Variable::from_targets(&value_targets);
-        //
-        // Ok(Self {
-        //     mapping_location,
-        //     map_key,
-        //     value,
-        //     _phantom: PhantomData::<F>,
-        // })
+        let map_key = src.read_byte32_target()?;
+        let value = src.read_byte32_target()?;
+        Ok(Self {
+            mapping_location,
+            map_key,
+            value,
+            _phantom: PhantomData,
+        })
     }
 }

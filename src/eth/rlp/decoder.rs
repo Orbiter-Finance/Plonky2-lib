@@ -27,7 +27,7 @@
 //! 1 and 1' are in this file, decoder.rs. 2 and 2' are in utils.rs. Finally, 3 and 3' are in
 //! builder.rs.
 
-use crate::eth::utils::stream::Stream;
+use crate::types::stream::Stream;
 
 /// An item is a string (i.e., byte array) or a list of items.
 #[derive(PartialEq, Debug)]

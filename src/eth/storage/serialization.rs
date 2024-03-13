@@ -1,5 +1,5 @@
 use crate::ecdsa::gadgets::ecdsa::CustomGeneratorSerializer;
-use crate::storage::gadgets::EthStorageKeyGenerator;
+use crate::eth::storage::gadgets::EthStorageKeyGenerator;
 use plonky2::field::extension::Extendable;
 use plonky2::field::types::PrimeField;
 use plonky2::gadgets::arithmetic::EqualityGenerator;

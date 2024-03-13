@@ -1,12 +1,12 @@
 use crate::ecdsa::gadgets::ecdsa::CustomGateSerializer;
-use crate::mpt::utils::public_inputs_to_hex;
+use crate::eth::mpt::utils::public_inputs_to_hex;
+use crate::eth::storage::gadgets::utils::get_map_storage_location;
+use crate::eth::storage::gadgets::EthStorageKeyGenerator;
+use crate::eth::storage::serialization::StorageGeneratorSerializer;
+use crate::eth::storage::types::{StorageKeyInput, StorageKeyInputTarget};
+use crate::eth::storage::witness::WitnessStorage;
 use crate::nonnative::biguint::BigUintTarget;
 use crate::profiling_enable;
-use crate::storage::gadgets::utils::get_map_storage_location;
-use crate::storage::gadgets::EthStorageKeyGenerator;
-use crate::storage::serialization::StorageGeneratorSerializer;
-use crate::storage::types::{StorageKeyInput, StorageKeyInputTarget};
-use crate::storage::witness::WitnessStorage;
 use crate::types::bytes::{Bytes32Target, CircuitBuilderBytes, U256Target};
 use core::str::FromStr;
 use ethers::prelude::U256;

@@ -1,7 +1,7 @@
 pub mod utils;
 
+use crate::eth::storage::gadgets::utils::get_map_storage_location;
 use crate::nonnative::biguint::ReadBigUintTarget;
-use crate::storage::gadgets::utils::get_map_storage_location;
 use crate::types::bytes::{
     AddressTarget, Bytes32Target, CircuitBuilderBytes, GeneratedValuesBytes, U256Target,
     WitnessBytes,

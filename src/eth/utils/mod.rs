@@ -1,4 +1,3 @@
-pub mod stream;
 extern crate hex;
 
 #[macro_export]

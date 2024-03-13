@@ -1,5 +1,4 @@
-use crate::types::bytes::{Bytes32Target, U256Target};
-use ethers_core::k256::U256;
+use crate::types::bytes::Bytes32Target;
 use ethers_core::types::H256;
 use plonky2_u32::gadgets::arithmetic_u32::U32Target;
 

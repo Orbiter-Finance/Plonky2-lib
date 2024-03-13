@@ -1,4 +1,4 @@
-use crate::storage::types::{StorageKeyInput, StorageKeyInputTarget};
+use crate::eth::storage::types::{StorageKeyInput, StorageKeyInputTarget};
 use crate::types::bytes::WitnessBytes;
 use plonky2::field::types::PrimeField64;
 use plonky2::iop::witness::Witness;

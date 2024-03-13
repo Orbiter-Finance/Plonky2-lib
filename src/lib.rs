@@ -5,6 +5,8 @@ extern crate core;
 extern crate proc_macro;
 
 pub mod ecdsa;
+pub mod eth;
+pub mod extension;
 pub mod hash;
 pub mod mpt;
 pub mod nonnative;

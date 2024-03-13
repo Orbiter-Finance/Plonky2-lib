@@ -1,25 +1,46 @@
-use crate::nonnative::biguint::BigUintTarget;
+use crate::nonnative::biguint::{BigUintTarget, GeneratedValuesBigUint};
 use array_macro::array;
 use itertools::Itertools;
+use num::BigUint;
 use plonky2::field::extension::Extendable;
-use plonky2::field::types::PrimeField64;
+use plonky2::field::types::{PrimeField, PrimeField64};
 use plonky2::hash::hash_types::RichField;
+use plonky2::iop::generator::GeneratedValues;
 use plonky2::iop::target::{BoolTarget, Target};
-use plonky2::iop::witness::Witness;
+use plonky2::iop::witness::{Witness, WitnessWrite};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 use plonky2_u32::witness::WitnessU32;
 
+/// A Target in the circuit representing a byte value. Under the hood, it is represented as
+/// eight bits stored in big endian.
 #[derive(Debug, Clone, Copy)]
 pub struct ByteTarget(pub [BoolTarget; 8]);
 
 impl ByteTarget {
-    pub fn from_u32<F: RichField + Extendable<D>, const D: usize>(
+    pub fn from_u8<F: RichField + Extendable<D>, const D: usize>(
         builder: &mut CircuitBuilder<F, D>,
         value: u32,
     ) -> Self {
-        let target = builder.constant(F::from_canonical_u32(value));
-        builder.low_bits(target, 8, 8).try_into().unwrap()
+        let target = builder.constant(F::from_canonical_u8(value as u8));
+        Self::from_target(builder, target)
+    }
+
+    /// Creates a ByteTarget from a Target.
+    pub fn from_target<F: RichField + Extendable<D>, const D: usize>(
+        builder: &mut CircuitBuilder<F, D>,
+        target: Target,
+    ) -> Self {
+        builder.range_check(target, 8);
+        let bools = builder.low_bits(target, 8, 8);
+        Self::from_bool_targets(bools)
+    }
+
+    /// Create a ByteTarget from a BoolTarget array of length 8.
+    pub fn from_bool_targets(mut targets: Vec<BoolTarget>) -> Self {
+        assert_eq!(targets.len(), 8);
+        targets.reverse();
+        targets.try_into().unwrap()
     }
 
     pub fn as_be_bits(self) -> [BoolTarget; 8] {
@@ -112,12 +133,36 @@ impl<const N: usize> BytesTarget<N> {
         builder: &mut CircuitBuilder<F, D>,
         value: BigUintTarget,
     ) -> Self {
+        let targets = value
+            .limbs
+            .into_iter()
+            .map(|t| t.0)
+            .collect::<Vec<Target>>();
+        Self::from_targets(builder, targets)
+    }
+
+    /// Create a BytesTarget from a Target array
+    pub fn from_targets<F: RichField + Extendable<D>, const D: usize>(
+        builder: &mut CircuitBuilder<F, D>,
+        targets: Vec<Target>,
+    ) -> Self {
         let mut bytes = Vec::with_capacity(N);
-        for limb in value.limbs.iter() {
-            let byte: ByteTarget = builder.low_bits(limb.0, 8, 8).try_into().unwrap();
+        for target in targets.into_iter() {
+            let byte = ByteTarget::from_target(builder, target);
             bytes.push(byte);
         }
         Self::new(bytes)
+    }
+
+    pub fn from_bool_targets(targets: Vec<BoolTarget>) -> Self {
+        let size = 8;
+        assert_eq!(targets.len() % size, 0);
+        let byte_targets = targets
+            .chunks_exact(size)
+            .map(|v| ByteTarget::from_bool_targets(v.to_vec()))
+            .collect_vec();
+
+        Self::new(byte_targets)
     }
 
     pub fn as_slice(&self) -> &[ByteTarget] {
@@ -174,13 +219,19 @@ impl Bytes32Target {
         builder: &mut CircuitBuilder<F, D>,
         value: BigUintTarget,
     ) -> Self {
-        let mut bytes32 = Vec::with_capacity(32);
-        for limb in value.limbs.iter() {
-            let byte: ByteTarget = builder.low_bits(limb.0, 8, 8).try_into().unwrap();
-            bytes32.push(byte);
-        }
+        let targets = value
+            .limbs
+            .into_iter()
+            .map(|t| t.0)
+            .collect::<Vec<Target>>();
+        Self::from_targets(builder, targets)
+    }
 
-        bytes32.try_into().unwrap()
+    pub fn from_targets<F: RichField + Extendable<D>, const D: usize>(
+        builder: &mut CircuitBuilder<F, D>,
+        targets: Vec<Target>,
+    ) -> Self {
+        BytesTarget::<32>::from_targets(builder, targets).to_bytes32_target()
     }
 
     pub fn as_bytes(&self) -> [ByteTarget; 32] {
@@ -301,6 +352,19 @@ impl<const N: usize> From<Vec<U32Target>> for U32ArrayTarget<N> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct U256Target(pub [U32Target; 8]);
+
+impl From<Vec<U32Target>> for U256Target {
+    fn from(vec: Vec<U32Target>) -> Self {
+        let array: [U32Target; 8] = vec.try_into().expect("Vec length is not 8");
+        U256Target(array)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AddressTarget(pub BytesTarget<20>);
+
 pub trait Nibbles<ByteTarget> {
     fn to_nibbles<F: RichField + Extendable<D>, const D: usize>(
         self,
@@ -329,6 +393,8 @@ pub trait CircuitBuilderBytes<F: RichField + Extendable<D>, const D: usize> {
     fn add_virtual_bytes32_array_target<const N: usize>(&mut self) -> Bytes32ArrayTarget<N>;
 
     fn add_virtual_u32_array_target<const N: usize>(&mut self) -> U32ArrayTarget<N>;
+
+    fn add_virtual_u256_target(&mut self) -> U256Target;
 
     fn assert_bytes32_is_equal(&mut self, x: Bytes32Target, y: Bytes32Target);
 }
@@ -363,6 +429,11 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBytes<F, D>
         u32_targets.into()
     }
 
+    fn add_virtual_u256_target(&mut self) -> U256Target {
+        let u32_targets = self.add_virtual_u32_targets(8);
+        u32_targets.into()
+    }
+
     fn assert_bytes32_is_equal(&mut self, x: Bytes32Target, y: Bytes32Target) {
         for (t1, t2) in x.targets().iter().zip(y.targets().iter()) {
             self.connect(*t1, *t2);
@@ -373,9 +444,15 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilderBytes<F, D>
 pub trait WitnessBytes<F: PrimeField64>: Witness<F> {
     fn set_byte_target(&mut self, target: &ByteTarget, value: u32);
 
+    fn get_byte_target(&self, target: ByteTarget) -> u32;
+
     fn set_bytes_target<const N: usize>(&mut self, target: &BytesTarget<N>, value: Vec<u32>);
 
+    fn get_bytes_target<const N: usize>(&self, target: BytesTarget<N>) -> Vec<u32>;
+
     fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>);
+
+    fn get_bytes32_target(&self, target: Bytes32Target) -> Vec<u32>;
 
     fn set_bytes32_array_target<const N: usize>(
         &mut self,
@@ -384,6 +461,8 @@ pub trait WitnessBytes<F: PrimeField64>: Witness<F> {
     );
 
     fn set_u32_array_target<const N: usize>(&mut self, target: &U32ArrayTarget<N>, value: Vec<u32>);
+
+    fn set_u256_target(&mut self, target: &U256Target, value: Vec<u32>);
 }
 
 impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
@@ -395,6 +474,15 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
         }
     }
 
+    fn get_byte_target(&self, target: ByteTarget) -> u32 {
+        let target_values: Vec<_> = target
+            .as_be_bits()
+            .into_iter()
+            .map(|t| self.get_bool_target(t))
+            .collect();
+        bools_to_u32(target_values)
+    }
+
     fn set_bytes_target<const N: usize>(&mut self, target: &BytesTarget<N>, value: Vec<u32>) {
         assert_eq!(N, value.len());
         for (u, t) in value.iter().zip(target.as_vec().iter()) {
@@ -402,11 +490,29 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
         }
     }
 
+    fn get_bytes_target<const N: usize>(&self, target: BytesTarget<N>) -> Vec<u32> {
+        let values: Vec<_> = target
+            .as_vec()
+            .into_iter()
+            .map(|t| self.get_byte_target(t))
+            .collect();
+        values
+    }
+
     fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>) {
         assert_eq!(32, value.len());
         for (u, t) in value.iter().zip(target.as_bytes().iter()) {
             self.set_byte_target(t, *u);
         }
+    }
+
+    fn get_bytes32_target(&self, target: Bytes32Target) -> Vec<u32> {
+        let values: Vec<_> = target
+            .as_bytes()
+            .into_iter()
+            .map(|t| self.get_byte_target(t))
+            .collect();
+        values
     }
 
     fn set_bytes32_array_target<const N: usize>(
@@ -430,6 +536,36 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
             self.set_u32_target(*t, *u);
         }
     }
+
+    fn set_u256_target(&mut self, target: &U256Target, value: Vec<u32>) {
+        assert_eq!(8, value.len());
+        for (u, t) in value.iter().zip(target.0.iter()) {
+            self.set_u32_target(*t, *u);
+        }
+    }
+}
+
+/// GeneratedValues
+
+pub trait GeneratedValuesBytes<F: PrimeField> {
+    fn set_byte_target(&mut self, target: &ByteTarget, value: u32);
+    fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>);
+}
+
+impl<F: PrimeField> GeneratedValuesBytes<F> for GeneratedValues<F> {
+    fn set_byte_target(&mut self, target: &ByteTarget, value: u32) {
+        let bools = u32_to_bools(value);
+        assert_eq!(target.as_be_bits().len(), bools.len());
+        for (i, &bool) in bools.iter().enumerate() {
+            self.set_bool_target(target.as_be_bits()[i], bool);
+        }
+    }
+    fn set_bytes32_target(&mut self, target: &Bytes32Target, value: Vec<u32>) {
+        assert_eq!(32, value.len());
+        for (u, t) in value.iter().zip(target.as_bytes().iter()) {
+            self.set_byte_target(t, *u);
+        }
+    }
 }
 
 pub fn u32_to_bools(mut value: u32) -> Vec<bool> {
@@ -438,5 +574,19 @@ pub fn u32_to_bools(mut value: u32) -> Vec<bool> {
         binary.insert(0, if value & 1 == 1 { true } else { false });
         value >>= 1;
     }
+    while binary.len() < 8 {
+        binary.insert(0, false);
+    }
     binary
+}
+
+pub fn bools_to_u32(bools: Vec<bool>) -> u32 {
+    let mut value: u32 = 0;
+    for &b in bools.iter() {
+        value <<= 1;
+        if b {
+            value |= 1;
+        }
+    }
+    value
 }

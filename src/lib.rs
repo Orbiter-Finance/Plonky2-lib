@@ -1,11 +1,12 @@
 use log::LevelFilter;
 
 extern crate alloc;
+extern crate core;
 extern crate proc_macro;
 
 pub mod ecdsa;
 pub mod hash;
-mod mpt;
+pub mod mpt;
 pub mod nonnative;
 pub mod poseidon;
 pub mod smt;

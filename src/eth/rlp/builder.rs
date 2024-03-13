@@ -510,7 +510,7 @@ pub fn fill_encoded_rlp_target<F: RichField, const ENCODING_LEN: usize>(
     encoded_bytes: &[u8; ENCODING_LEN],
     encoded_rlp_target: &BytesTarget<ENCODING_LEN>,
 ) {
-    let encoded_bytes_vec: Vec<u32> = encoded_bytes.iter().map(|&byte| byte as u32).collect();
+    let encoded_bytes_vec: Vec<u8> = encoded_bytes.iter().map(|&byte| byte as u8).collect();
     witness.set_bytes_target(encoded_rlp_target, encoded_bytes_vec)
 }
 
@@ -525,11 +525,10 @@ pub fn fill_decoded_rlp_target<F: RichField>(
     //     witness.set_bytes32_target(&mpt_node_target.data.0[index], data_as_u32);
     // }
 
-    // TODO: misleading, the set_bytes32_array_target inputs should be u8. Here we convert u32 to u8
-    let data_for_target: Vec<Vec<u32>> = mpt_node_fixed_size
+    let data_for_target: Vec<Vec<u8>> = mpt_node_fixed_size
         .data
         .iter()
-        .map(|item| item.data.iter().map(|&byte| byte as u32).collect())
+        .map(|item| item.data.iter().map(|&byte| byte as u8).collect())
         .collect();
 
     witness.set_bytes32_array_target::<MAX_MPT_NODE_SIZE>(&mpt_node_target.data, data_for_target);
@@ -549,7 +548,10 @@ pub fn fill_decoded_rlp_target<F: RichField>(
 #[cfg(test)]
 mod tests {
 
-    use crate::{bytes, profiling_enable, watchers::bytes_watcher::BytesWatcher};
+    use crate::{
+        bytes, profiling_enable,
+        watchers::{bytes_watcher::BytesWatcher, target_watcher::TargetWatcher},
+    };
 
     use super::*;
     use anyhow::{Ok, Result};
@@ -579,15 +581,26 @@ mod tests {
 
         let encoded_rlp_target = builder.add_virtual_encoded_rlp_target::<ENCODING_LEN>();
         let decoded_rlp_target = builder.add_virtual_decoded_rlp_target();
+
+        // Splitting decoded_rlp_target for watcher debugging purposes
         let decoded_bytes_vec: Vec<Vec<ByteTarget>> = decoded_rlp_target
             .data
             .as_slice()
             .iter()
             .map(|bytes32| bytes32.as_bytes().to_vec())
             .collect();
+        let decoded_bytes_lens = decoded_rlp_target.lens;
+        let decoded_len = decoded_rlp_target.len;
+
         decoded_bytes_vec
             .into_iter()
             .for_each(|bytes32| builder.watch_bytes(bytes32.as_slice(), &"decoded bytes32: "));
+        decoded_bytes_lens
+            .0
+            .into_iter()
+            .for_each(|len| builder.watch(&len.0, &"each decoded bytes32 valid len: "));
+        builder.watch(&decoded_len.0, "valid decoded bytes32 num:");
+
         let data = builder.build::<C>();
 
         let mut encoding_fixed_size = [0u8; ENCODING_LEN];

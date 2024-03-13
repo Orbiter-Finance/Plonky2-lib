@@ -8,7 +8,7 @@ pub mod ecdsa;
 pub mod eth;
 pub mod extension;
 pub mod hash;
-pub mod mpt;
+// pub mod mpt;
 pub mod nonnative;
 pub mod poseidon;
 pub mod smt;

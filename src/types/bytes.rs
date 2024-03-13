@@ -432,11 +432,17 @@ impl<T: Witness<F>, F: PrimeField64> WitnessBytes<F> for T {
     }
 }
 
+// convert u32 to u8, then to bools
 pub fn u32_to_bools(mut value: u32) -> Vec<bool> {
-    let mut binary: Vec<bool> = Vec::new();
-    while value > 0 {
-        binary.insert(0, if value & 1 == 1 { true } else { false });
+    let mut binary: Vec<bool> = Vec::with_capacity(8);
+
+    // Only keep the lowest 8 bits
+    value &= 0xFF;
+
+    for _ in 0..8 {
+        binary.insert(0, value & 1 == 1);
         value >>= 1;
     }
+
     binary
 }

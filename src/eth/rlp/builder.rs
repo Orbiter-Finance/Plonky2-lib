@@ -1,13 +1,19 @@
+use anyhow::bail;
 use itertools::Itertools;
 use plonky2::field::extension::Extendable;
+use plonky2::field::types::PrimeField64;
 use plonky2::hash::{hash_types::RichField, poseidon::PoseidonHash};
 use plonky2::iop::challenger::RecursiveChallenger;
 use plonky2::iop::target::Target;
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
+use plonky2_u32::witness::WitnessU32;
 use serde::{Deserialize, Serialize};
 
-use crate::types::bytes::{ArrayTarget, ByteTarget, Bytes32ArrayTarget, Bytes32Target};
+use crate::types::bytes::{
+    ByteTarget, Bytes32ArrayTarget, Bytes32Target, BytesTarget, CircuitBuilderBytes,
+    U32ArrayTarget, WitnessBytes,
+};
 
 use super::utils::{decode_padded_mpt_node, MPTNodeFixedSize};
 // use plonky2x::frontend::extension::CubicExtensionVariable;
@@ -25,7 +31,7 @@ pub const MAX_RLP_ITEM_SIZE: usize = 32;
 #[derive(Clone, Debug)]
 pub struct MPTNodeTarget {
     pub data: Bytes32ArrayTarget<MAX_MPT_NODE_SIZE>,
-    pub lens: ArrayTarget<MAX_MPT_NODE_SIZE>,
+    pub lens: U32ArrayTarget<MAX_MPT_NODE_SIZE>,
     pub len: U32Target,
 }
 
@@ -121,7 +127,7 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     fn add_virtual_decoded_rlp_target(&mut self) -> MPTNodeTarget;
     fn add_virtual_encoded_rlp_target<const ENCODING_LEN: usize>(
         &mut self,
-    ) -> Bytes32ArrayTarget<ENCODING_LEN>;
+    ) -> BytesTarget<ENCODING_LEN>;
     // fn if_less_than_else<T: CircuitVariable>(
     //     &mut self,
     //     a: U32Variable,
@@ -161,6 +167,19 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
 impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
     for CircuitBuilder<F, D>
 {
+    fn add_virtual_encoded_rlp_target<const ENCODING_LEN: usize>(
+        &mut self,
+    ) -> BytesTarget<ENCODING_LEN> {
+        self.add_virtual_bytes_target::<ENCODING_LEN>()
+    }
+
+    fn add_virtual_decoded_rlp_target(&mut self) -> MPTNodeTarget {
+        let data = self.add_virtual_bytes32_array_target::<MAX_MPT_NODE_SIZE>();
+        let lens = self.add_virtual_u32_array_target::<MAX_MPT_NODE_SIZE>();
+        let len = self.add_virtual_u32_target();
+
+        MPTNodeTarget { data, lens, len }
+    }
     // / Helper function. Equivalent to `(a < b) ? c : d`.
     // fn if_less_than_else<T: CircuitVariable>(
     //     &mut self,
@@ -484,4 +503,249 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
     //     decoded_node
     // }
+}
+
+pub fn fill_encoded_rlp_target<F: RichField, const ENCODING_LEN: usize>(
+    witness: &mut impl WitnessBytes<F>,
+    encoded_bytes: &[u8; ENCODING_LEN],
+    encoded_rlp_target: &BytesTarget<ENCODING_LEN>,
+) {
+    let encoded_bytes_vec: Vec<u8> = encoded_bytes.iter().map(|&byte| byte as u8).collect();
+    witness.set_bytes_target(encoded_rlp_target, encoded_bytes_vec)
+}
+
+pub fn fill_decoded_rlp_target<F: RichField>(
+    witness: &mut (impl WitnessBytes<F> + WitnessU32<F>),
+    mpt_node_target: &MPTNodeTarget,
+    mpt_node_fixed_size: &MPTNodeFixedSize,
+) {
+    // Convert and set the `data` field
+    // for (index, item) in mpt_node_fixed_size.data.iter().enumerate() {
+    //     let data_as_u32: Vec<u32> = item.data.iter().map(|&byte| byte as u32).collect();
+    //     witness.set_bytes32_target(&mpt_node_target.data.0[index], data_as_u32);
+    // }
+
+    let data_for_target: Vec<Vec<u8>> = mpt_node_fixed_size
+        .data
+        .iter()
+        .map(|item| item.data.iter().map(|&byte| byte as u8).collect())
+        .collect();
+
+    witness.set_bytes32_array_target::<MAX_MPT_NODE_SIZE>(&mpt_node_target.data, data_for_target);
+
+    // Set the `lens` field
+    let lens_as_u32: Vec<u32> = mpt_node_fixed_size
+        .data
+        .iter()
+        .map(|item| item.len as u32)
+        .collect();
+    witness.set_u32_array_target::<MAX_MPT_NODE_SIZE>(&mpt_node_target.lens, lens_as_u32);
+
+    // Set the `len` field
+    witness.set_u32_target(mpt_node_target.len, mpt_node_fixed_size.len as u32);
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::{
+        bytes, profiling_enable,
+        watchers::{bytes_watcher::BytesWatcher, target_watcher::TargetWatcher},
+    };
+
+    use super::*;
+    use anyhow::{Ok, Result};
+    use plonky2::{
+        iop::witness::PartialWitness,
+        plonk::{
+            circuit_data::CircuitConfig,
+            config::{GenericConfig, PoseidonGoldilocksConfig},
+        },
+    };
+
+    fn test_verify_decoded_mpt_node<const ENCODING_LEN: usize, F>(
+        rlp_encoding: Vec<u8>,
+        fuzzer: F,
+    ) -> Result<()>
+    where
+        F: Fn([u8; ENCODING_LEN]) -> [u8; ENCODING_LEN],
+    {
+        profiling_enable();
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = <C as GenericConfig<D>>::F;
+
+        let config = CircuitConfig::standard_recursion_config();
+
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+
+        let encoded_rlp_target = builder.add_virtual_encoded_rlp_target::<ENCODING_LEN>();
+        let decoded_rlp_target = builder.add_virtual_decoded_rlp_target();
+
+        // Splitting decoded_rlp_target for watcher debugging purposes
+        let decoded_bytes_vec: Vec<Vec<ByteTarget>> = decoded_rlp_target
+            .data
+            .as_slice()
+            .iter()
+            .map(|bytes32| bytes32.as_bytes().to_vec())
+            .collect();
+        let decoded_bytes_lens = decoded_rlp_target.lens;
+        let decoded_len = decoded_rlp_target.len;
+
+        decoded_bytes_vec
+            .into_iter()
+            .for_each(|bytes32| builder.watch_bytes(bytes32.as_slice(), &"decoded bytes32: "));
+        decoded_bytes_lens
+            .0
+            .into_iter()
+            .for_each(|len| builder.watch(&len.0, &"each decoded bytes32 valid len: "));
+        builder.watch(&decoded_len.0, "valid decoded bytes32 num:");
+
+        let data = builder.build::<C>();
+
+        let mut encoding_fixed_size = [0u8; ENCODING_LEN];
+        encoding_fixed_size[..rlp_encoding.len()].copy_from_slice(&rlp_encoding);
+        let skip_computation = false;
+
+        let mpt_node =
+            decode_padded_mpt_node(&encoding_fixed_size, rlp_encoding.len(), skip_computation);
+
+        for _ in 0..3 {
+            let mut pw = PartialWitness::new();
+            fill_encoded_rlp_target(&mut pw, &encoding_fixed_size, &encoded_rlp_target);
+
+            fill_decoded_rlp_target(&mut pw, &decoded_rlp_target, &mpt_node);
+            let proof = data.prove(pw).unwrap();
+            println!("proof PIS {:?}", proof.public_inputs);
+            println!("prove success!!!");
+            assert!(data.verify(proof).is_ok());
+        }
+        Ok(())
+    }
+
+    // / Passes `verify_decode_mpt_node` the given rlp-encoded string and their decoded values.
+    // /
+    // / `fuzzer` modifies the input to `verify_decoded_mpt_node`. If you want to test a "happy path"
+    // / , simply set `fuzzer` to the identity function. If `fuzzer` modifies any meaningful value
+    // / (i.e., anything other than padded 0's), the test is expected to fail. Use `#[should_panic]`
+    // / to tell Rust that it's expected to fail.
+    // fn test_verify_decoded_mpt_node<const ENCODING_LEN: usize, F>(rlp_encoding: Vec<u8>, fuzzer: F)
+    // where
+    //     F: Fn([u8; ENCODING_LEN]) -> [u8; ENCODING_LEN],
+    // {
+    //     setup_logger();
+
+    //     let mut builder: CircuitBuilder<DefaultParameters, 2> = DefaultBuilder::new();
+
+    //     type F = GoldilocksField;
+    //     let mut encoding_fixed_size = [0u8; ENCODING_LEN];
+    //     encoding_fixed_size[..rlp_encoding.len()].copy_from_slice(&rlp_encoding);
+    //     let skip_computation = false;
+
+    //     let mpt_node =
+    //         decode_padded_mpt_node(&encoding_fixed_size, rlp_encoding.len(), skip_computation);
+
+    //     let encoded = builder.constant::<ArrayVariable<ByteVariable, ENCODING_LEN>>(
+    //         fuzzer(encoding_fixed_size).to_vec(),
+    //     );
+    //     let len = builder.constant::<Variable>(F::from_canonical_usize(rlp_encoding.len()));
+    //     let skip_computation = builder.constant::<BoolVariable>(false);
+    //     let mpt_node_variable = builder.constant::<MPTVariable>(mpt_node.to_value_type());
+
+    //     builder.verify_decoded_mpt_node::<ENCODING_LEN>(
+    //         &encoded,
+    //         len,
+    //         skip_computation,
+    //         &mpt_node_variable,
+    //     );
+    //     let circuit = builder.build();
+    //     let input = circuit.input();
+    //     let (proof, output) = circuit.prove(&input);
+
+    //     println!(
+    //         "{:?}",
+    //         plonky2::plonk::config::GenericHashOut::to_bytes(
+    //             &circuit.data.verifier_only.circuit_digest
+    //         )
+    //     );
+    //     circuit.verify(&proof, &input, &output);
+    // }
+
+    #[test]
+    fn test_verify_decoded_mpt_node_extension_node() {
+        const ENCODING_LEN: usize = 2 * 32 + 20;
+
+        // This is an RLP-encoded list of an extension node. The 00 in 0x006f indicates that the path
+        // length is even, and the path is 6 -> f. This extension node points to a leaf node with
+        // the hash starting with 0x188d11.  ["0x006f",
+        // "0x188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6"]
+        let rlp_encoding: Vec<u8> =
+            bytes!("0xe482006fa0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6");
+
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
+    }
+
+    #[test]
+    fn test_verify_decoded_mpt_node_extension_node_mid_length() {
+        const ENCODING_LEN: usize = 120;
+
+        // This is an RLP-encoded list of an extension node. Both the first and second elements are
+        // 32 bytes. The whole encoding is 68 bytes, and this is suitable for testing a list whose
+        // length can be represented in 1 byte.
+        let rlp_encoding: Vec<u8> =
+            bytes!("0xf842a01111111111111111111111111111111111111111111111111111111111111111a01111111111111111111111111111111111111111111111111111111111111111");
+
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
+    }
+
+    #[test]
+    fn test_verify_decoded_mpt_node_branch_node() {
+        const ENCODING_LEN: usize = 600;
+
+        // This is a RLP-encoded list of a branch node. It is a list of length 17. Each of the first
+        // 16 elements is a 32-byte hash, and the last element is 0.
+        let rlp_encoding: Vec<u8>  = bytes!("0xf90211a0215ead887d4da139eba306f76d765f5c4bfb03f6118ac1eb05eec3a92e1b0076a03eb28e7b61c689fae945b279f873cfdddf4e66db0be0efead563ea08bc4a269fa03025e2cce6f9c1ff09c8da516d938199c809a7f94dcd61211974aebdb85a4e56a0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6a0b281bb20061318a515afbdd02954740f069ebc75e700fde24dfbdf8c76d57119a0d8d77d917f5b7577e7e644bbc7a933632271a8daadd06a8e7e322f12dd828217a00f301190681b368db4308d1d1aa1794f85df08d4f4f646ecc4967c58fd9bd77ba0206598a4356dd50c70cfb1f0285bdb1402b7d65b61c851c095a7535bec230d5aa000959956c2148c82c207272af1ae129403d42e8173aedf44a190e85ee5fef8c3a0c88307e92c80a76e057e82755d9d67934ae040a6ec402bc156ad58dbcd2bcbc4a0e40a8e323d0b0b19d37ab6a3d110de577307c6f8efed15097dfb5551955fc770a02da2c6b12eedab6030b55d4f7df2fb52dab0ef4db292cb9b9789fa170256a11fa0d00e11cde7531fb79a315b4d81ea656b3b452fe3fe7e50af48a1ac7bf4aa6343a066625c0eb2f6609471f20857b97598ae4dfc197666ff72fe47b94e4124900683a0ace3aa5d35ba3ebbdc0abde8add5896876b25261717c0a415c92642c7889ec66a03a4931a67ae8ebc1eca9ffa711c16599b86d5286504182618d9c2da7b83f5ef780");
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
+    }
+
+    #[test]
+    fn test_verify_decoded_mpt_node_leaf_node_single_bytes() {
+        const ENCODING_LEN: usize = 40;
+
+        // This is a RLP-encoded list of a leaf node, ["0x30", "0xff"]
+        let rlp_encoding: Vec<u8> = bytes!("0xc33081ff");
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_verify_decoded_mpt_node_branch_node_fuzzed_prefix() {
+        const ENCODING_LEN: usize = 600;
+
+        // This is a RLP-encoded list of a branch node. It is a list of length 17. Each of the first
+        // 16 elements is a 32-byte hash, and the last element is 0.
+        let rlp_encoding: Vec<u8>  = bytes!("0xf90211a0215ead887d4da139eba306f76d765f5c4bfb03f6118ac1eb05eec3a92e1b0076a03eb28e7b61c689fae945b279f873cfdddf4e66db0be0efead563ea08bc4a269fa03025e2cce6f9c1ff09c8da516d938199c809a7f94dcd61211974aebdb85a4e56a0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6a0b281bb20061318a515afbdd02954740f069ebc75e700fde24dfbdf8c76d57119a0d8d77d917f5b7577e7e644bbc7a933632271a8daadd06a8e7e322f12dd828217a00f301190681b368db4308d1d1aa1794f85df08d4f4f646ecc4967c58fd9bd77ba0206598a4356dd50c70cfb1f0285bdb1402b7d65b61c851c095a7535bec230d5aa000959956c2148c82c207272af1ae129403d42e8173aedf44a190e85ee5fef8c3a0c88307e92c80a76e057e82755d9d67934ae040a6ec402bc156ad58dbcd2bcbc4a0e40a8e323d0b0b19d37ab6a3d110de577307c6f8efed15097dfb5551955fc770a02da2c6b12eedab6030b55d4f7df2fb52dab0ef4db292cb9b9789fa170256a11fa0d00e11cde7531fb79a315b4d81ea656b3b452fe3fe7e50af48a1ac7bf4aa6343a066625c0eb2f6609471f20857b97598ae4dfc197666ff72fe47b94e4124900683a0ace3aa5d35ba3ebbdc0abde8add5896876b25261717c0a415c92642c7889ec66a03a4931a67ae8ebc1eca9ffa711c16599b86d5286504182618d9c2da7b83f5ef780");
+        let fuzz = |x: [u8; ENCODING_LEN]| {
+            let mut y = x;
+            y[0] = 0xe;
+            y
+        };
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, fuzz);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_verify_decoded_mpt_node_branch_node_fuzzed_body() {
+        const ENCODING_LEN: usize = 600;
+
+        // This is a RLP-encoded list of a branch node. It is a list of length 17. Each of the first
+        // 16 elements is a 32-byte hash, and the last element is 0.
+        let rlp_encoding: Vec<u8>  = bytes!("0xf90211a0215ead887d4da139eba306f76d765f5c4bfb03f6118ac1eb05eec3a92e1b0076a03eb28e7b61c689fae945b279f873cfdddf4e66db0be0efead563ea08bc4a269fa03025e2cce6f9c1ff09c8da516d938199c809a7f94dcd61211974aebdb85a4e56a0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6a0b281bb20061318a515afbdd02954740f069ebc75e700fde24dfbdf8c76d57119a0d8d77d917f5b7577e7e644bbc7a933632271a8daadd06a8e7e322f12dd828217a00f301190681b368db4308d1d1aa1794f85df08d4f4f646ecc4967c58fd9bd77ba0206598a4356dd50c70cfb1f0285bdb1402b7d65b61c851c095a7535bec230d5aa000959956c2148c82c207272af1ae129403d42e8173aedf44a190e85ee5fef8c3a0c88307e92c80a76e057e82755d9d67934ae040a6ec402bc156ad58dbcd2bcbc4a0e40a8e323d0b0b19d37ab6a3d110de577307c6f8efed15097dfb5551955fc770a02da2c6b12eedab6030b55d4f7df2fb52dab0ef4db292cb9b9789fa170256a11fa0d00e11cde7531fb79a315b4d81ea656b3b452fe3fe7e50af48a1ac7bf4aa6343a066625c0eb2f6609471f20857b97598ae4dfc197666ff72fe47b94e4124900683a0ace3aa5d35ba3ebbdc0abde8add5896876b25261717c0a415c92642c7889ec66a03a4931a67ae8ebc1eca9ffa711c16599b86d5286504182618d9c2da7b83f5ef780");
+        let fuzz = |x: [u8; ENCODING_LEN]| {
+            let mut y = x;
+            y[100] += 1;
+            y
+        };
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, fuzz);
+    }
 }

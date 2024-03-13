@@ -70,7 +70,10 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     }
 
     fn dependencies(&self) -> Vec<Target> {
-        self.targets.iter().flat_map(|t| t.targets()).collect()
+        self.targets
+            .iter()
+            .flat_map(|t| t.elements_targets())
+            .collect()
     }
 
     fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {

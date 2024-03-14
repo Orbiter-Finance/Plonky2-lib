@@ -137,7 +137,7 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     fn add_virtual_encoded_rlp_target<const ENCODING_LEN: usize>(
         &mut self,
     ) -> MPTNodeRLPEncodingTarget<ENCODING_LEN>;
-    fn decode_mpt_node_rlp_encoding_bytes_target<const ENCODING_LEN: usize>(
+    fn decode_rlp_to_mpt_node_target<const ENCODING_LEN: usize>(
         &mut self,
         encoded: BytesTarget<ENCODING_LEN>,
         len: U32Target,
@@ -201,7 +201,7 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         MPTNodeTarget { data, lens, len }
     }
 
-    fn decode_mpt_node_rlp_encoding_bytes_target<const ENCODING_LEN: usize>(
+    fn decode_rlp_to_mpt_node_target<const ENCODING_LEN: usize>(
         &mut self,
         encoded: BytesTarget<ENCODING_LEN>,
         len: U32Target,
@@ -631,7 +631,7 @@ mod tests {
         let skip_computation_target = builder.add_virtual_bool_target_safe();
         let encoded_bytes_target = encoded_rlp_target.clone().encoding_bytes_targets;
         let encoded_bytes_len = encoded_rlp_target.clone().len;
-        let decoded_mpt_node_target = builder.decode_mpt_node_rlp_encoding_bytes_target(
+        let decoded_mpt_node_target = builder.decode_rlp_to_mpt_node_target(
             encoded_bytes_target,
             encoded_bytes_len,
             skip_computation_target.clone(),
@@ -658,11 +658,13 @@ mod tests {
 
         let data = builder.build::<C>();
 
+        // prepare input data
         let mut encoding_fixed_size = [0u8; ENCODING_LEN];
         encoding_fixed_size[..rlp_encoding.len()].copy_from_slice(&rlp_encoding);
         let len = rlp_encoding.len();
         let skip_computation = false;
 
+        // fill input data in the circuit
         for _ in 0..3 {
             let mut pw = PartialWitness::new();
             fill_encoded_rlp_target(

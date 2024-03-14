@@ -1,10 +1,12 @@
+use std::marker::PhantomData;
+
 use anyhow::bail;
 use itertools::Itertools;
 use plonky2::field::extension::Extendable;
 use plonky2::field::types::PrimeField64;
 use plonky2::hash::{hash_types::RichField, poseidon::PoseidonHash};
 use plonky2::iop::challenger::RecursiveChallenger;
-use plonky2::iop::target::Target;
+use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
 use plonky2_u32::witness::WitnessU32;
@@ -15,6 +17,7 @@ use crate::types::bytes::{
     U32ArrayTarget, WitnessBytes,
 };
 
+use super::generator::DecodeRLPNodeGenerator;
 use super::utils::{decode_padded_mpt_node, MPTNodeFixedSize};
 // use plonky2x::frontend::extension::CubicExtensionVariable;
 // use plonky2x::frontend::hint::simple::hint::Hint;
@@ -32,6 +35,12 @@ pub const MAX_RLP_ITEM_SIZE: usize = 32;
 pub struct MPTNodeTarget {
     pub data: Bytes32ArrayTarget<MAX_MPT_NODE_SIZE>,
     pub lens: U32ArrayTarget<MAX_MPT_NODE_SIZE>,
+    pub len: U32Target,
+}
+
+#[derive(Clone, Debug)]
+pub struct MPTNodeRLPEncodingTarget<const ENCODING_LEN: usize> {
+    pub encoding_bytes_targets: BytesTarget<ENCODING_LEN>,
     pub len: U32Target,
 }
 
@@ -127,7 +136,13 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     fn add_virtual_decoded_rlp_target(&mut self) -> MPTNodeTarget;
     fn add_virtual_encoded_rlp_target<const ENCODING_LEN: usize>(
         &mut self,
-    ) -> BytesTarget<ENCODING_LEN>;
+    ) -> MPTNodeRLPEncodingTarget<ENCODING_LEN>;
+    fn decode_mpt_node_rlp_encoding_bytes_target<const ENCODING_LEN: usize>(
+        &mut self,
+        encoded: BytesTarget<ENCODING_LEN>,
+        len: U32Target,
+        skip_computation: BoolTarget,
+    ) -> MPTNodeTarget;
     // fn if_less_than_else<T: CircuitVariable>(
     //     &mut self,
     //     a: U32Variable,
@@ -169,8 +184,13 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 {
     fn add_virtual_encoded_rlp_target<const ENCODING_LEN: usize>(
         &mut self,
-    ) -> BytesTarget<ENCODING_LEN> {
-        self.add_virtual_bytes_target::<ENCODING_LEN>()
+    ) -> MPTNodeRLPEncodingTarget<ENCODING_LEN> {
+        let bytes = self.add_virtual_bytes_target::<ENCODING_LEN>();
+        let len = self.add_virtual_u32_target();
+        MPTNodeRLPEncodingTarget {
+            encoding_bytes_targets: bytes,
+            len,
+        }
     }
 
     fn add_virtual_decoded_rlp_target(&mut self) -> MPTNodeTarget {
@@ -180,6 +200,28 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
         MPTNodeTarget { data, lens, len }
     }
+
+    fn decode_mpt_node_rlp_encoding_bytes_target<const ENCODING_LEN: usize>(
+        &mut self,
+        encoded: BytesTarget<ENCODING_LEN>,
+        len: U32Target,
+        skip_computation: BoolTarget,
+    ) -> MPTNodeTarget {
+        let decoded_rlp_target = self.add_virtual_decoded_rlp_target();
+        let encoded_vec = encoded.as_vec();
+
+        let generator = DecodeRLPNodeGenerator::<F, D> {
+            encoded: encoded_vec,
+            len: len.clone(),
+            skip_computation: skip_computation.clone(),
+            decoded_mpt_node: decoded_rlp_target.clone(),
+            _phantom: PhantomData,
+        };
+
+        self.add_simple_generator(generator);
+        decoded_rlp_target
+    }
+
     // / Helper function. Equivalent to `(a < b) ? c : d`.
     // fn if_less_than_else<T: CircuitVariable>(
     //     &mut self,
@@ -508,10 +550,15 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 pub fn fill_encoded_rlp_target<F: RichField, const ENCODING_LEN: usize>(
     witness: &mut impl WitnessBytes<F>,
     encoded_bytes: &[u8; ENCODING_LEN],
-    encoded_rlp_target: &BytesTarget<ENCODING_LEN>,
+    len: u32,
+    encoded_rlp_target: MPTNodeRLPEncodingTarget<ENCODING_LEN>,
 ) {
     let encoded_bytes_vec: Vec<u8> = encoded_bytes.iter().map(|&byte| byte as u8).collect();
-    witness.set_bytes_target(encoded_rlp_target, encoded_bytes_vec)
+    witness.set_bytes_target(
+        &encoded_rlp_target.encoding_bytes_targets,
+        encoded_bytes_vec,
+    );
+    witness.set_u32_target(encoded_rlp_target.len, len)
 }
 
 pub fn fill_decoded_rlp_target<F: RichField>(
@@ -556,13 +603,14 @@ mod tests {
     use super::*;
     use anyhow::{Ok, Result};
     use plonky2::{
-        iop::witness::PartialWitness,
+        iop::witness::{PartialWitness, WitnessWrite},
         plonk::{
             circuit_data::CircuitConfig,
             config::{GenericConfig, PoseidonGoldilocksConfig},
         },
     };
 
+    // rlp test with watchers
     fn test_verify_decoded_mpt_node<const ENCODING_LEN: usize, F>(
         rlp_encoding: Vec<u8>,
         fuzzer: F,
@@ -580,17 +628,24 @@ mod tests {
         let mut builder = CircuitBuilder::<F, D>::new(config);
 
         let encoded_rlp_target = builder.add_virtual_encoded_rlp_target::<ENCODING_LEN>();
-        let decoded_rlp_target = builder.add_virtual_decoded_rlp_target();
+        let skip_computation_target = builder.add_virtual_bool_target_safe();
+        let encoded_bytes_target = encoded_rlp_target.clone().encoding_bytes_targets;
+        let encoded_bytes_len = encoded_rlp_target.clone().len;
+        let decoded_mpt_node_target = builder.decode_mpt_node_rlp_encoding_bytes_target(
+            encoded_bytes_target,
+            encoded_bytes_len,
+            skip_computation_target.clone(),
+        );
 
         // Splitting decoded_rlp_target for watcher debugging purposes
-        let decoded_bytes_vec: Vec<Vec<ByteTarget>> = decoded_rlp_target
+        let decoded_bytes_vec: Vec<Vec<ByteTarget>> = decoded_mpt_node_target
             .data
             .as_slice()
             .iter()
             .map(|bytes32| bytes32.as_bytes().to_vec())
             .collect();
-        let decoded_bytes_lens = decoded_rlp_target.lens;
-        let decoded_len = decoded_rlp_target.len;
+        let decoded_bytes_lens = decoded_mpt_node_target.lens;
+        let decoded_len = decoded_mpt_node_target.len;
 
         decoded_bytes_vec
             .into_iter()
@@ -605,16 +660,19 @@ mod tests {
 
         let mut encoding_fixed_size = [0u8; ENCODING_LEN];
         encoding_fixed_size[..rlp_encoding.len()].copy_from_slice(&rlp_encoding);
+        let len = rlp_encoding.len();
         let skip_computation = false;
-
-        let mpt_node =
-            decode_padded_mpt_node(&encoding_fixed_size, rlp_encoding.len(), skip_computation);
 
         for _ in 0..3 {
             let mut pw = PartialWitness::new();
-            fill_encoded_rlp_target(&mut pw, &encoding_fixed_size, &encoded_rlp_target);
+            fill_encoded_rlp_target(
+                &mut pw,
+                &encoding_fixed_size,
+                len as u32,
+                encoded_rlp_target.clone(),
+            );
+            pw.set_bool_target(skip_computation_target.clone(), skip_computation);
 
-            fill_decoded_rlp_target(&mut pw, &decoded_rlp_target, &mpt_node);
             let proof = data.prove(pw).unwrap();
             println!("proof PIS {:?}", proof.public_inputs);
             println!("prove success!!!");
@@ -714,6 +772,13 @@ mod tests {
 
         // This is a RLP-encoded list of a leaf node, ["0x30", "0xff"]
         let rlp_encoding: Vec<u8> = bytes!("0xc33081ff");
+        test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
+    }
+
+    #[test]
+    fn test_verify_decode_long_rlp_encoding() {
+        const ENCODING_LEN: usize = 1200;
+        let rlp_encoding: Vec<u8> = bytes!("b904004c6f72656d20697073756d20646f6c6f722073697420616d65742c20636f6e73656374657475722061646970697363696e6720656c69742e20437572616269747572206d6175726973206d61676e612c20737573636970697420736564207665686963756c61206e6f6e2c20696163756c697320666175636962757320746f72746f722e2050726f696e20737573636970697420756c74726963696573206d616c6573756164612e204475697320746f72746f7220656c69742c2064696374756d2071756973207472697374697175652065752c20756c7472696365732061742072697375732e204d6f72626920612065737420696d70657264696574206d6920756c6c616d636f7270657220616c6971756574207375736369706974206e6563206c6f72656d2e2041656e65616e2071756973206c656f206d6f6c6c69732c2076756c70757461746520656c6974207661726975732c20636f6e73657175617420656e696d2e204e756c6c6120756c74726963657320747572706973206a7573746f2c20657420706f73756572652075726e6120636f6e7365637465747572206e65632e2050726f696e206e6f6e20636f6e76616c6c6973206d657475732e20446f6e65632074656d706f7220697073756d20696e206d617572697320636f6e67756520736f6c6c696369747564696e2e20566573746962756c756d20616e746520697073756d207072696d697320696e206661756369627573206f726369206c756374757320657420756c74726963657320706f737565726520637562696c69612043757261653b2053757370656e646973736520636f6e76616c6c69732073656d2076656c206d617373612066617563696275732c2065676574206c6163696e6961206c616375732074656d706f722e204e756c6c61207175697320756c747269636965732070757275732e2050726f696e20617563746f722072686f6e637573206e69626820636f6e64696d656e74756d206d6f6c6c69732e20416c697175616d20636f6e73657175617420656e696d206174206d65747573206c75637475732c206120656c656966656e6420707572757320656765737461732e20437572616269747572206174206e696268206d657475732e204e616d20626962656e64756d2c206e6571756520617420617563746f72207472697374697175652c206c6f72656d206c696265726f20616c697175657420617263752c206e6f6e20696e74657264756d2074656c6c7573206c65637475732073697420616d65742065726f732e20437261732072686f6e6375732c206d65747573206163206f726e617265206375727375732c20646f6c6f72206a7573746f20756c747269636573206d657475732c20617420756c6c616d636f7270657220766f6c7574706174");
         test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, |x| x);
     }
 

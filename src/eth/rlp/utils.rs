@@ -36,6 +36,10 @@ impl From<&RLPItem> for RLPItemFixedSize {
             RLPItem::String(data) => {
                 // Copy data into self.data.
                 // If data.len() > MAX_RLP_ITEM_SIZE, panic.
+                assert!(
+                    data.len() <= MAX_RLP_ITEM_SIZE,
+                    "data length exceeds MAX_RLP_ITEM_SIZE"
+                );
                 let len = data.len();
                 let mut array = [0; MAX_RLP_ITEM_SIZE];
                 array[..data.len()].copy_from_slice(data);

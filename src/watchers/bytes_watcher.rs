@@ -104,7 +104,10 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
     }
 }
 
-fn byte_target_to_u8<F: RichField>(byte_target: &ByteTarget, witness: &PartitionWitness<F>) -> u8 {
+pub fn byte_target_to_u8<F: RichField>(
+    byte_target: &ByteTarget,
+    witness: &PartitionWitness<F>,
+) -> u8 {
     byte_target
         .as_le_bits()
         .iter()

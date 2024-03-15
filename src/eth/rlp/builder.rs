@@ -5,7 +5,7 @@ use itertools::Itertools;
 use plonky2::field::extension::Extendable;
 use plonky2::field::types::PrimeField64;
 use plonky2::hash::{hash_types::RichField, poseidon::PoseidonHash};
-use plonky2::iop::challenger::RecursiveChallenger;
+use plonky2::iop::challenger::{self, RecursiveChallenger};
 use plonky2::iop::target::{BoolTarget, Target};
 use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2_u32::gadgets::arithmetic_u32::{CircuitBuilderU32, U32Target};
@@ -16,6 +16,7 @@ use crate::types::bytes::{
     ByteTarget, Bytes32ArrayTarget, Bytes32Target, BytesTarget, CircuitBuilderBytes,
     U32ArrayTarget, WitnessBytes,
 };
+use crate::watchers::target_watcher::TargetWatcher;
 
 use super::generator::DecodeRLPNodeGenerator;
 use super::utils::{decode_padded_mpt_node, MPTNodeFixedSize};
@@ -143,6 +144,13 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
         len: U32Target,
         skip_computation: BoolTarget,
     ) -> MPTNodeTarget;
+    fn verify_decoded_mpt_node<const ENCODING_LEN: usize>(
+        &mut self,
+        encoded: BytesTarget<ENCODING_LEN>,
+        len: U32Target,
+        skip_computation: BoolTarget,
+        decoded_node: MPTNodeTarget,
+    );
     // fn if_less_than_else<T: CircuitVariable>(
     //     &mut self,
     //     a: U32Variable,
@@ -163,13 +171,6 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     //     claim_poly: CubicExtensionVariable,
     //     challenge: CubicExtensionVariable,
     // ) -> CubicExtensionVariable;
-    // fn verify_decoded_mpt_node<const ENCODING_LEN: usize>(
-    //     &mut self,
-    //     encoded: &ArrayVariable<ByteVariable, ENCODING_LEN>,
-    //     len: U32Variable,
-    //     skip_computation: BoolVariable,
-    //     mpt: &MPTVariable,
-    // );
 
     // fn decode_mpt_node<const ENCODING_LEN: usize, const ELEMENT_LEN: usize>(
     //     &mut self,
@@ -220,6 +221,76 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
         self.add_simple_generator(generator);
         decoded_rlp_target
+    }
+
+    fn verify_decoded_mpt_node<const ENCODING_LEN: usize>(
+        &mut self,
+        encoded: BytesTarget<ENCODING_LEN>,
+        len: U32Target,
+        skip_computation: BoolTarget,
+        decoded_node: MPTNodeTarget,
+    ) {
+        let mut challenger = RecursiveChallenger::<F, PoseidonHash, D>::new(self);
+
+        // Give the challenger the encoded string.
+        let encoded_bit_targets: Vec<Target> = encoded
+            .as_vec()
+            .iter()
+            .flat_map(|byte_target| byte_target.as_le_bits())
+            .map(|bit_target| bit_target.target)
+            .collect();
+        let encoded_bytes_len = len.0;
+        challenger.observe_elements(&encoded_bit_targets);
+        challenger.observe_element(encoded_bytes_len);
+
+        // Give the challenger the output of the hint which decodes `encoded`. In other words, this
+        // is what we're trying to verify. It is ABSOLUTELY essential that we pass in `mpt` here to
+        // generate challengers as otherwise one can manipulate the polynomial to get 0.
+
+        // Splitting decoded_rlp_target for watcher debugging purposes
+        let decoded_bytes_vec_target: Vec<Target> = decoded_node
+            .data
+            .as_slice()
+            .iter()
+            .flat_map(|bytes32| bytes32.as_bytes().to_vec())
+            .flat_map(|byte| byte.as_le_bits())
+            .map(|bit_target| bit_target.target)
+            .collect();
+        let decoded_bytes_lens_target: Vec<Target> = decoded_node
+            .lens
+            .targets()
+            .iter()
+            .map(|u32target| u32target.0)
+            .collect();
+        let decoded_len_target = decoded_node.len.0;
+
+        challenger.observe_elements(&decoded_bytes_vec_target);
+        challenger.observe_elements(&decoded_bytes_lens_target);
+        challenger.observe_element(decoded_len_target);
+
+        challenger.observe_element(skip_computation.target);
+
+        let challenge = challenger.get_challenge(self);
+        self.watch(&challenge, &"challenge");
+
+        let one = self.one_u32();
+        let zero = self.zero_u32();
+        let true_v = self.constant_bool(true);
+        let mut encoding_poly = self.zero_u32();
+        let mut pow = self.one_u32();
+
+        let encoded_vec = encoded.as_vec();
+        for i in 0..ENCODING_LEN {
+            let current_term = U32Target(encoded_vec[i].to_target(self));
+
+            (current_term, _) = self.mul_u32(current_term, pow);
+            // It's okay to simply add current_term as pow becomes 0 once i = ENCODING_LEN.
+            (encoding_poly, _) = self.add_u32(encoding_poly, current_term);
+
+            let index = self.constant_u32(i as u32);
+            let pow_multiplier = self.if_less_than_else(index, len, challenge, zero);
+            pow = self.mul(pow, pow_multiplier);
+        }
     }
 
     // / Helper function. Equivalent to `(a < b) ? c : d`.

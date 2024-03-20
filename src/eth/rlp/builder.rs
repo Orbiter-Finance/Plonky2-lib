@@ -108,21 +108,21 @@ pub trait RLPCircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
         len: U32Target,
         skip_computation: BoolTarget,
         decoded_node: MPTNodeTarget,
-    ) -> (U32Target, U32Target);
+    ) -> (Target, Target);
 
     fn calculate_polynomial_emulating_rlp_encoding(
         &mut self,
         byte_array: &Bytes32Target,
         len: U32Target,
-        pow: U32Target,
-    ) -> (U32Target, U32Target, U32Target);
+        pow: Target,
+    ) -> (Target, Target, U32Target);
 
     fn add_prefix_polynomial_and_shift(
         &mut self,
         sum_of_rlp_encoding_length: U32Target,
-        claim_poly: U32Target,
-        challenge: U32Target,
-    ) -> U32Target;
+        claim_poly: Target,
+        challenge: Target,
+    ) -> Target;
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
@@ -165,6 +165,14 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         };
 
         self.add_simple_generator(generator);
+
+        let (final_claim_poly, challenge) = self.verify_decoded_mpt_node::<ENCODING_LEN>(
+            encoded.clone(),
+            len.clone(),
+            skip_computation.clone(),
+            decoded_rlp_target.clone(),
+        );
+
         decoded_rlp_target
     }
 
@@ -174,7 +182,7 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         len: U32Target,
         skip_computation: BoolTarget,
         decoded_node: MPTNodeTarget,
-    ) -> (U32Target, U32Target) {
+    ) -> (Target, Target) {
         let mut challenger = RecursiveChallenger::<F, PoseidonHash, D>::new(self);
 
         // Give the challenger the encoded string.
@@ -216,36 +224,31 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
         let challenge = challenger.get_challenge(self);
 
-        // let challenge_u32 = U32Target(challenge);
-        let challenge_u32 = self.from_target_to_u32_safe(challenge);
-        // let challenge_u32 = self.constant_u32(2);
         self.watch(&challenge.clone(), &"challenge");
-        self.watch(&challenge_u32.0, &"challenge_u32");
 
-        let one = self.one_u32();
-        let zero = self.zero_u32();
+        let one = self.one();
+        let zero = self.zero();
         let true_bool = self.constant_bool(true);
-        let mut encoding_poly = self.zero_u32();
-        let mut pow = self.one_u32();
+        let mut encoding_poly = self.zero();
+        let mut pow = self.one();
 
         let encoded_vec = encoded.as_vec();
         for i in 0..ENCODING_LEN {
-            let mut current_term = U32Target(encoded_vec[i].to_target(self));
+            let mut current_term = encoded_vec[i].to_target(self);
 
-            // TODO: should we use cubic extension? There is no difference between (a+b)*c % p and ((a%p)+(b%p))*(c%p) % p
-            // It works, but is there a concern for overflow or handling of higher bits?
-            (current_term, _) = self.mul_u32(current_term, pow);
+            // TODO: should we use cubic extension?
+            current_term = self.mul(current_term, pow);
             // It's okay to simply add current_term as pow becomes 0 once i = ENCODING_LEN.
-            (encoding_poly, _) = self.add_u32(encoding_poly, current_term);
+            encoding_poly = self.add(encoding_poly, current_term);
 
             let index = self.constant_u32(i as u32);
             let index_le_len = self.is_less_than_u32(index, len, 32);
-            let pow_multiplier = self.select_u32(index_le_len, challenge_u32, zero);
+            let pow_multiplier = self.select(index_le_len, challenge, zero);
 
-            (pow, _) = self.mul_u32(pow, pow_multiplier);
+            pow = self.mul(pow, pow_multiplier);
         }
 
-        let mut sum_of_rlp_encoding_length = zero;
+        let mut sum_of_rlp_encoding_length = self.zero_u32();
         let mut claim_poly = zero;
         pow = one;
 
@@ -257,37 +260,34 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
                 .calculate_polynomial_emulating_rlp_encoding(
                     &decoded_node.data.0[i],
                     decoded_node.lens.0[i],
-                    challenge_u32,
+                    challenge,
                 );
 
             // Shift the `poly` value by the appropriate power of `challenger`, and also check
             // if we should even include this.
-            poly = self.select_u32(index_le_len, poly, zero);
-            (poly, _) = self.mul_u32(poly, pow);
-            (claim_poly, _) = self.add_u32(claim_poly, poly);
+            poly = self.select(index_le_len, poly, zero);
+            poly = self.mul(poly, pow);
+            claim_poly = self.add(claim_poly, poly);
 
-            next_pow = self.select_u32(index_le_len, next_pow, one);
-            (pow, _) = self.mul_u32(pow, next_pow);
+            next_pow = self.select(index_le_len, next_pow, one);
+            pow = self.mul(pow, next_pow);
 
-            encoding_len = self.select_u32(index_le_len, encoding_len, zero);
+            encoding_len = self.select_u32(index_le_len, encoding_len, U32Target(zero));
             (sum_of_rlp_encoding_length, _) =
                 self.add_u32(sum_of_rlp_encoding_length, encoding_len);
         }
 
-        let final_claim_poly = self.add_prefix_polynomial_and_shift(
-            sum_of_rlp_encoding_length,
-            claim_poly,
-            challenge_u32,
-        );
-        self.watch(&final_claim_poly.0, "claim_poly");
-        self.watch(&encoding_poly.0, "encoding_poly");
+        let final_claim_poly =
+            self.add_prefix_polynomial_and_shift(sum_of_rlp_encoding_length, claim_poly, challenge);
+        self.watch(&final_claim_poly, "claim_poly");
+        self.watch(&encoding_poly, "encoding_poly");
 
-        let claim_poly_equals_encoding_poly = self.is_equal(final_claim_poly.0, encoding_poly.0);
+        let claim_poly_equals_encoding_poly = self.is_equal(final_claim_poly, encoding_poly);
         let result = self.or(skip_computation, claim_poly_equals_encoding_poly);
 
         self.connect(result.target, true_bool.target);
 
-        (final_claim_poly, challenge_u32)
+        (final_claim_poly, challenge)
     }
 
     /// Evaluate the polynomial constructed from seeing RLP-encode(byte_array) as a vector of
@@ -308,11 +308,11 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         &mut self,
         byte_array: &Bytes32Target,
         len: U32Target,
-        pow: U32Target,
-    ) -> (U32Target, U32Target, U32Target) {
+        pow: Target,
+    ) -> (Target, Target, U32Target) {
         let true_bool = self.constant_bool(true);
-        let zero_u32 = self.zero_u32();
-        let one_u32 = self.one_u32();
+        let zero = self.zero();
+        let one = self.one();
         let cons55 = self.constant_u32(56);
 
         // TODO: It's likely that we'll need to implement the case when the given byte string is
@@ -329,37 +329,39 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
         let cons0x80 = self.constant_u32(128);
 
-        let first_byte_as_target = U32Target(byte_array.0[0].to_target(self));
-        let len1 = one_u32;
+        let first_byte_as_target = byte_array.0[0].to_target(self);
+        let len1 = one;
         let res_case_1 = first_byte_as_target;
 
-        let (mut res_case_2, _) = self.add_u32(len, cons0x80);
-        let (len2, _) = self.add_u32(len, one_u32);
+        let mut res_case_2 = self.add(len.0, cons0x80.0);
+        let len2 = self.add(len.0, one);
         let mut next_pow = pow;
 
         for i in 0..32 {
             let index = self.constant_u32(i as u32);
             let index_le_len = self.is_less_than_u32(index, len, 32);
 
-            let mut current_term_u32 = U32Target(byte_array.0[i].to_target(self));
-            (current_term_u32, _) = self.mul_u32(current_term_u32, next_pow);
-            current_term_u32 = self.select_u32(index_le_len, current_term_u32, zero_u32);
-            (res_case_2, _) = self.add_u32(res_case_2, current_term_u32);
+            let mut current_term = byte_array.0[i].to_target(self);
+            current_term = self.mul(current_term, next_pow);
+            current_term = self.select(index_le_len, current_term, zero);
+            res_case_2 = self.add(res_case_2, current_term);
 
-            let pow_multiplier = self.select_u32(index_le_len, pow, one_u32);
-            (next_pow, _) = self.mul_u32(next_pow, pow_multiplier);
+            let pow_multiplier = self.select(index_le_len, pow, one);
+            next_pow = self.mul(next_pow, pow_multiplier);
         }
 
-        let is_len_1 = self.is_equal(len.0, one_u32.0);
+        let is_len_1 = self.is_equal(len.0, one);
         let is_first_variable_less_than_0x80 =
-            self.is_less_than_u32(first_byte_as_target, cons0x80, 32);
+            self.is_less_than_u32(U32Target(first_byte_as_target), cons0x80, 32);
         let is_case_1 = self.and(is_len_1, is_first_variable_less_than_0x80);
 
-        let res_len = self.select_u32(is_case_1, len1, len2);
-        let res_pow = self.select_u32(is_case_1, pow, next_pow);
-        let res = self.select_u32(is_case_1, res_case_1, res_case_2);
+        let res_len = self.select(is_case_1, len1, len2);
+        let res_pow = self.select(is_case_1, pow, next_pow);
+        let res = self.select(is_case_1, res_case_1, res_case_2);
 
-        (res, res_pow, res_len)
+        let res_len_u32 = self.from_target_to_u32_safe(res_len);
+
+        (res, res_pow, res_len_u32)
     }
 
     /// Add in the term corresponding to the prefix byte(s) of the RLP-encoding, given the sum of
@@ -374,10 +376,9 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
     fn add_prefix_polynomial_and_shift(
         &mut self,
         sum_of_rlp_encoding_length: U32Target,
-        claim_poly: U32Target,
-        challenge: U32Target,
-    ) -> U32Target {
-        let true_bool = self.constant_bool(true);
+        claim_poly: Target,
+        challenge: Target,
+    ) -> Target {
         let cons56 = self.constant_u32(56);
         let cons256 = self.constant_u32(256);
         let cons65536 = self.constant_u32(65536);
@@ -385,7 +386,7 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
 
         // Assert that sum_of_rlp_encoding_length is less than 256^2 = 65536 bits. A
         // well-formed MPT should never need that many bytes.
-        let valid_length = self.check_less_than_u32(sum_of_rlp_encoding_length, cons65536, 32);
+        self.check_less_than_u32(sum_of_rlp_encoding_length, cons65536, 32);
 
         // The main idea is to convert claim_poly into `prefix_term + [appropriate power of
         // challenger] * claim_poly`. There are three cases that we work on:
@@ -397,17 +398,17 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         // now.
 
         // Case 1: We need 0xc0 + combined_length + claim_poly * challenge.
-        let mut case_1 = self.constant_u32(192);
-        (case_1, _) = self.add_u32(case_1, sum_of_rlp_encoding_length);
-        let (case_1_poly, _) = self.mul_u32(claim_poly, challenge);
-        (case_1, _) = self.add_u32(case_1, case_1_poly);
+        let mut case_1 = self.constant(F::from_canonical_u32(192));
+        case_1 = self.add(case_1, sum_of_rlp_encoding_length.0);
+        let case_1_poly = self.mul(claim_poly, challenge);
+        case_1 = self.add(case_1, case_1_poly);
 
         // Case 2: We need 0xf8 + combined_length * challenger + claim_poly * (challenge ^ 2).
-        let (mut case_2, _) = self.mul_u32(sum_of_rlp_encoding_length, challenge);
-        (case_2, _) = self.add_u32(case_2, cons0xf8);
-        let (mut case_2_poly, _) = self.mul_u32(claim_poly, challenge);
-        (case_2_poly, _) = self.mul_u32(case_2_poly, challenge);
-        (case_2, _) = self.add_u32(case_2, case_2_poly);
+        let mut case_2 = self.mul(sum_of_rlp_encoding_length.0, challenge);
+        case_2 = self.add(case_2, cons0xf8.0);
+        let mut case_2_poly = self.mul(claim_poly, challenge);
+        case_2_poly = self.mul(case_2_poly, challenge);
+        case_2 = self.add(case_2, case_2_poly);
 
         // Case 3
         //
@@ -423,29 +424,30 @@ impl<F: RichField + Extendable<D>, const D: usize> RLPCircuitBuilder<F, D>
         let (div_in_biguint, rem_in_biguint) = self.div_rem_biguint(&lhs, &rhs);
 
         // only take the least significant u32 limb
-        let mut div = div_in_biguint.limbs[0];
-        let mut rem = rem_in_biguint.limbs[0];
+        let mut div = div_in_biguint.limbs[0].0;
+        let mut rem = rem_in_biguint.limbs[0].0;
 
-        let mut case_3 = self.constant_u32(249);
+        let mut case_3 = self.constant(F::from_canonical_u32(249));
 
-        (div, _) = self.mul_u32(div, challenge);
-        (case_3, _) = self.add_u32(case_3, div);
+        div = self.mul(div, challenge);
+        case_3 = self.add(case_3, div);
 
-        (rem, _) = self.mul_u32(rem, challenge);
-        (rem, _) = self.mul_u32(rem, challenge);
-        (case_3, _) = self.add_u32(case_3, rem);
+        rem = self.mul(rem, challenge);
+        rem = self.mul(rem, challenge);
+        case_3 = self.add(case_3, rem);
 
-        let (mut case_3_poly, _) = self.mul_u32(claim_poly, challenge);
-        (case_3_poly, _) = self.mul_u32(case_3_poly, challenge);
-        (case_3_poly, _) = self.mul_u32(case_3_poly, challenge);
+        let mut case_3_poly = self.mul(claim_poly, challenge);
+        case_3_poly = self.mul(case_3_poly, challenge);
+        case_3_poly = self.mul(case_3_poly, challenge);
 
-        (case_3, _) = self.add_u32(case_3, case_3_poly);
+        case_3 = self.add(case_3, case_3_poly);
 
         // Pick the right solution
+        // TODO: since sum_of_rlp_encoding_length < 65536, we can set num_bits to 16 in the below comparison
         let encoding_len_le_256 = self.is_less_than_u32(sum_of_rlp_encoding_length, cons256, 32);
-        let mut res = self.select_u32(encoding_len_le_256, case_2, case_3);
+        let mut res = self.select(encoding_len_le_256, case_2, case_3);
         let encoding_len_le_56 = self.is_less_than_u32(sum_of_rlp_encoding_length, cons56, 32);
-        res = self.select_u32(encoding_len_le_56, case_1, res);
+        res = self.select(encoding_len_le_56, case_1, res);
         res
     }
 }
@@ -521,7 +523,7 @@ mod tests {
     where
         F: Fn([u8; ENCODING_LEN]) -> [u8; ENCODING_LEN],
     {
-        profiling_enable();
+        // profiling_enable();
         const D: usize = 2;
         type C = PoseidonGoldilocksConfig;
         type F = <C as GenericConfig<D>>::F;
@@ -539,45 +541,43 @@ mod tests {
             encoded_bytes_len.clone(),
             skip_computation_target.clone(),
         );
-        let (final_claim_poly, challenge_u32) = builder.verify_decoded_mpt_node::<ENCODING_LEN>(
+
+        // the builder.decode_rlp_to_mpt_node_target above already has verify_decoded_mpt_node, here we just debug it
+        let (final_claim_poly, challenge) = builder.verify_decoded_mpt_node::<ENCODING_LEN>(
             encoded_bytes_target.clone(),
             encoded_bytes_len.clone(),
             skip_computation_target.clone(),
             decoded_mpt_node_target.clone(),
         );
 
+        // use fuzz_target for testing purposes
         let encoded_fuzz_target = builder.add_virtual_encoded_rlp_target::<ENCODING_LEN>();
         let encoded_fuzz_vec = encoded_fuzz_target.clone().encoding_bytes_targets.as_vec();
         let fuzz_len = encoded_fuzz_target.clone().len;
         builder.watch(&fuzz_len.0, "fuzz_len");
 
-        let mut encoding_poly_fuzz = builder.zero_u32();
-        let mut pow = builder.one_u32();
-        let mut high_bits = builder.zero_u32();
+        let mut encoding_poly_fuzz = builder.zero();
+        let mut pow = builder.one();
 
-        let zero = builder.zero_u32();
+        let zero = builder.zero();
 
         for i in 0..ENCODING_LEN {
-            let mut current_term = U32Target(encoded_fuzz_vec[i].to_target(&mut builder));
+            let mut current_term = encoded_fuzz_vec[i].to_target(&mut builder);
 
-            // TODO: should we use cubic extension? There is no difference between (a+b)*c % p and ((a%p)+(b%p))*(c%p) % p
-            // It works, but is there a concern for overflow or handling of higher bits?
-            (current_term, _) = builder.mul_u32(current_term, pow);
+            current_term = builder.mul(current_term, pow);
             // It's okay to simply add current_term as pow becomes 0 once i = ENCODING_LEN.
-            (encoding_poly_fuzz, _) = builder.add_u32(encoding_poly_fuzz, current_term);
+            encoding_poly_fuzz = builder.add(encoding_poly_fuzz, current_term);
 
             let index = builder.constant_u32(i as u32);
             let index_le_len = builder.is_less_than_u32(index, fuzz_len, 32);
-            let pow_multiplier = builder.select_u32(index_le_len, challenge_u32, zero);
-            (pow, high_bits) = builder.mul_u32(pow, pow_multiplier);
-            if (i < 20) {
-                builder.watch(&pow.0, &"!current_pow");
-                builder.watch(&high_bits.0, &"!high_bits");
-            }
+            let pow_multiplier = builder.select(index_le_len, challenge, zero);
+            pow = builder.mul(pow, pow_multiplier);
+            // builder.watch(&pow, &"!current_pow");
+            // builder.watch(&high_bits.0, &"!high_bits");
         }
 
-        builder.connect(encoding_poly_fuzz.0, final_claim_poly.0);
-        builder.watch(&encoding_poly_fuzz.0, "fuzz encoding poly");
+        builder.connect(encoding_poly_fuzz, final_claim_poly);
+        builder.watch(&encoding_poly_fuzz, "fuzz encoding poly");
         // Splitting decoded_rlp_target for watcher debugging purposes
         // let decoded_bytes_vec: Vec<Vec<ByteTarget>> = decoded_mpt_node_target
         //     .data
@@ -606,7 +606,6 @@ mod tests {
         let skip_computation = false;
 
         // fill input data in the circuit
-
         let encoding_fixed_size_fuzz = fuzzer(encoding_fixed_size);
         for _ in 0..1 {
             let mut pw = PartialWitness::new();
@@ -627,8 +626,10 @@ mod tests {
 
             let proof = data.prove(pw).unwrap();
             println!("proof PIS {:?}", proof.public_inputs);
-            println!("prove success!!!");
-            assert!(data.verify(proof).is_ok());
+            let result = data.verify(proof);
+            println!("Verify result: {:?}", result);
+            assert!(result.is_ok());
+            println!("prove and verify proof success!!!");
         }
         Ok(())
     }
@@ -713,9 +714,50 @@ mod tests {
         let rlp_encoding: Vec<u8>  = bytes!("0xf90211a0215ead887d4da139eba306f76d765f5c4bfb03f6118ac1eb05eec3a92e1b0076a03eb28e7b61c689fae945b279f873cfdddf4e66db0be0efead563ea08bc4a269fa03025e2cce6f9c1ff09c8da516d938199c809a7f94dcd61211974aebdb85a4e56a0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6a0b281bb20061318a515afbdd02954740f069ebc75e700fde24dfbdf8c76d57119a0d8d77d917f5b7577e7e644bbc7a933632271a8daadd06a8e7e322f12dd828217a00f301190681b368db4308d1d1aa1794f85df08d4f4f646ecc4967c58fd9bd77ba0206598a4356dd50c70cfb1f0285bdb1402b7d65b61c851c095a7535bec230d5aa000959956c2148c82c207272af1ae129403d42e8173aedf44a190e85ee5fef8c3a0c88307e92c80a76e057e82755d9d67934ae040a6ec402bc156ad58dbcd2bcbc4a0e40a8e323d0b0b19d37ab6a3d110de577307c6f8efed15097dfb5551955fc770a02da2c6b12eedab6030b55d4f7df2fb52dab0ef4db292cb9b9789fa170256a11fa0d00e11cde7531fb79a315b4d81ea656b3b452fe3fe7e50af48a1ac7bf4aa6343a066625c0eb2f6609471f20857b97598ae4dfc197666ff72fe47b94e4124900683a0ace3aa5d35ba3ebbdc0abde8add5896876b25261717c0a415c92642c7889ec66a03a4931a67ae8ebc1eca9ffa711c16599b86d5286504182618d9c2da7b83f5ef780");
         let fuzz = |x: [u8; ENCODING_LEN]| {
             let mut y = x;
-            y[300] += 1;
+            y[100] += 1;
             y
         };
         test_verify_decoded_mpt_node::<ENCODING_LEN, _>(rlp_encoding, fuzz);
+    }
+
+    // Please close the global profile enabling before this batch test
+    #[test]
+    fn test_verify_decoded_mpt_node_branch_node_batch_fuzzed_body() {
+        const ENCODING_LEN: usize = 600;
+        let mut unexpected_pass_indices = Vec::new();
+        // RLP-encoded list as before...
+        let rlp_encoding: Vec<u8> = bytes!("0xf90211a0215ead887d4da139eba306f76d765f5c4bfb03f6118ac1eb05eec3a92e1b0076a03eb28e7b61c689fae945b279f873cfdddf4e66db0be0efead563ea08bc4a269fa03025e2cce6f9c1ff09c8da516d938199c809a7f94dcd61211974aebdb85a4e56a0188d1100731419827900267bf4e6ea6d428fa5a67656e021485d1f6c89e69be6a0b281bb20061318a515afbdd02954740f069ebc75e700fde24dfbdf8c76d57119a0d8d77d917f5b7577e7e644bbc7a933632271a8daadd06a8e7e322f12dd828217a00f301190681b368db4308d1d1aa1794f85df08d4f4f646ecc4967c58fd9bd77ba0206598a4356dd50c70cfb1f0285bdb1402b7d65b61c851c095a7535bec230d5aa000959956c2148c82c207272af1ae129403d42e8173aedf44a190e85ee5fef8c3a0c88307e92c80a76e057e82755d9d67934ae040a6ec402bc156ad58dbcd2bcbc4a0e40a8e323d0b0b19d37ab6a3d110de577307c6f8efed15097dfb5551955fc770a02da2c6b12eedab6030b55d4f7df2fb52dab0ef4db292cb9b9789fa170256a11fa0d00e11cde7531fb79a315b4d81ea656b3b452fe3fe7e50af48a1ac7bf4aa6343a066625c0eb2f6609471f20857b97598ae4dfc197666ff72fe47b94e4124900683a0ace3aa5d35ba3ebbdc0abde8add5896876b25261717c0a415c92642c7889ec66a03a4931a67ae8ebc1eca9ffa711c16599b86d5286504182618d9c2da7b83f5ef780");
+
+        for i in 0..rlp_encoding.len() {
+            let mut current_rlp = rlp_encoding.clone();
+
+            let fuzzer = move |rlp: [u8; ENCODING_LEN]| -> [u8; ENCODING_LEN] {
+                let mut y = rlp;
+                if i < y.len() {
+                    y[i] = y[i].wrapping_add(1);
+                }
+                y
+            };
+
+            // Note: You need to handle the panic for each test to ensure all bytes are tested.
+            // This could be done with std::panic::catch_unwind or similar.
+            let result = std::panic::catch_unwind(|| {
+                test_verify_decoded_mpt_node::<ENCODING_LEN, _>(current_rlp, fuzzer);
+            });
+
+            if result.is_ok() {
+                unexpected_pass_indices.push(i);
+            }
+        }
+
+        if !unexpected_pass_indices.is_empty() {
+            let passed_msg = unexpected_pass_indices
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            panic!("Test unexpectedly passed at indices: {}", passed_msg);
+        }
     }
 }

@@ -98,6 +98,14 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for UninterleaveTo
         format!("{self:?}")
     }
 
+    fn export_circom_verification_code(&self) -> String {
+        todo!()
+    }
+
+    fn export_solidity_verification_code(&self) -> String {
+        todo!()
+    }
+
     fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {
         let mut constraints = vec![];
 
@@ -108,10 +116,8 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for UninterleaveTo
             // Check 1: Ensure that the decomposition matches the input
             // Remember that the bits are big-endian. The reduce_with_powers function takes a little-endian representation, so we reverse the input.
             // The function just reverses it back again when it does the computation but it's cleaner to re-use the existing code, this isn't a bottleneck
-            let computed_x_interleaved = reduce_with_powers(
-                bits.iter().rev(),
-                F::from_canonical_usize(Self::B).into(),
-            );
+            let computed_x_interleaved =
+                reduce_with_powers(bits.iter().rev(), F::from_canonical_usize(Self::B).into());
             constraints.push(computed_x_interleaved - x_interleaved);
 
             // Check 2: Ensure that the even-index bits in the decomposition match the x_evens value
@@ -219,11 +225,7 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for UninterleaveTo
         self.eval_unfiltered_base_batch_packed(vars_base)
     }
 
-    fn generators(
-        &self,
-        row: usize,
-        _local_constants: &[F],
-    ) -> Vec<WitnessGeneratorRef<F, D>> {
+    fn generators(&self, row: usize, _local_constants: &[F]) -> Vec<WitnessGeneratorRef<F, D>> {
         (0..self.num_ops)
             .map(|i| {
                 let g: WitnessGeneratorRef<F, D> = WitnessGeneratorRef::new(
@@ -255,13 +257,21 @@ impl<F: RichField + Extendable<D>, const D: usize> Gate<F, D> for UninterleaveTo
         self.num_ops * (Self::NUM_BITS + 1 + 2)
     }
 
-    fn serialize(&self, dst: &mut Vec<u8>, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<()> {
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> plonky2::util::serialization::IoResult<()> {
         todo!()
     }
 
-    fn deserialize(src: &mut plonky2::util::serialization::Buffer, common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>) -> plonky2::util::serialization::IoResult<Self>
+    fn deserialize(
+        src: &mut plonky2::util::serialization::Buffer,
+        common_data: &plonky2::plonk::circuit_data::CommonCircuitData<F, D>,
+    ) -> plonky2::util::serialization::IoResult<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         todo!()
     }
 }
@@ -381,7 +391,8 @@ impl<F: RichField + Extendable<D>, const D: usize> SimpleGenerator<F, D>
 
     fn deserialize(src: &mut Buffer, common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         todo!()
     }
 }

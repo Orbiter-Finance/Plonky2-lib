@@ -1,7 +1,8 @@
 use plonky2::{
     field::extension::Extendable,
     hash::{
-        hash_types::{HashOutTarget, RichField}, poseidon::SPONGE_WIDTH,
+        hash_types::{HashOutTarget, RichField},
+        poseidon::SPONGE_WIDTH,
         // hashing::SPONGE_WIDTH,
     },
     iop::target::{BoolTarget, Target},

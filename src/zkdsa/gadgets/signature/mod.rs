@@ -5,8 +5,8 @@ use plonky2::{
     plonk::{circuit_builder::CircuitBuilder, config::AlgebraicHasher},
 };
 
-use crate::poseidon::gadgets::poseidon_two_to_one;
 use super::super::account::SecretKey;
+use crate::poseidon::gadgets::poseidon_two_to_one;
 
 #[derive(Clone, Debug)]
 pub struct SimpleSignatureTarget {

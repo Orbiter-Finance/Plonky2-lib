@@ -6,10 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# plonky2 = { version = "0.1.4", default-features = false, features = ["gate_testing", "rand_chacha", "std", "parallel"]}
-plonky2 = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", default-features = true}
-plonky2_maybe_rayon = { git = "https://github.com/ZeroKPunk/plonky2.git", branch = "main", default-features = false }
-plonky2_u32 = { git = "https://github.com/ZeroKPunk/plonky2-u32.git",  branch = "main" }
+plonky2 = { git = "https://github.com/Orbiter-Finance/plonky2.git", branch = "main", default-features = true}
+plonky2_maybe_rayon = { git = "https://github.com/Orbiter-Finance/plonky2.git", branch = "main", default-features = false }
+plonky2_u32 = { git = "https://github.com/Orbiter-Finance/plonky2-u32.git",  branch = "main" }
 num = { version = "0.4.0", default-features = false }
 anyhow = { version = "1.0.40", default-features = false }
 hex = { version = "0.4.3", features = ["serde"]}
@@ -20,6 +19,8 @@ itertools = { version = "0.11.0", default-features = false }
 env_logger = "0.10.0"
 log = "0.4.14"
 ethers-core = { version = "2.0.10" }
+sha3 = { version = "0.10.6" }
+poseidon-permutation = { git = "https://github.com/polymerdao/poseidon-permutation-rs.git" }
 
 [dev-dependencies]
 rand = { version = "0.8.4", default-features = false, features = ["getrandom"] }
@@ -31,7 +32,7 @@ criterion = "0.5.1"
 [profile.test]
 opt-level = 3
 
-[patch."https://github.com/ZerokPunk/plonky2.git"]
+[patch."https://github.com/Orbiter-Finance/plonky2.git"]
 plonky2 = { path = "../plonky2/plonky2"}
 plonky2_maybe_rayon = { path = "../plonky2/maybe_rayon"}
 
@@ -49,7 +50,7 @@ name = "batch_ecdsa_prove_benchmark"
 harness = false
 
 
-# [patch."https://github.com/orbiter/plonky2-u32.git"]
-# plonky2_u32 = { path = "../plonky2-u32"}
+ [patch."https://github.com/Orbiter-Finance/plonky2-u32.git"]
+ plonky2_u32 = { path = "../plonky2-u32"}
 
 

@@ -1,2 +1,2 @@
-pub mod interleaved_u32;
 pub mod gates;
+pub mod interleaved_u32;
